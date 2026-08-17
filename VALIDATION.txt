@@ -1,0 +1,22 @@
+XIAO GPS Tracker 1.5.0 validation
+
+PASS - Android resource XML parsed successfully.
+PASS - Every R.id reference in MainActivity exists in activity_main.xml.
+PASS - Gradle versionName 1.5.0 / versionCode 15.
+PASS - kotlin { compilerOptions { jvmTarget = JvmTarget.JVM_17 } } is top-level.
+PASS - Firmware and Android agree on CMD_SET_INTERVAL = 0x05.
+PASS - Allowed interval presets are 60, 900, 1800, 3600, 7200, 10800 seconds.
+PASS - Default firmware interval is 1800 seconds (30 minutes).
+PASS - Firmware metadata includes persisted GPS interval and owner identity.
+PASS - Android More menu contains GPX, CSV, and Clear History actions.
+PASS - Android has BLE idle auto-disconnect.
+PASS - Firmware C++ brace/parenthesis structural balance check.
+
+Additional protocol test performed before packaging:
+- Protocol.kt + GpsRecord.kt compiled with kotlinc.
+- setIntervalRequest(1800) produced the expected 11-byte framed command
+  with command type 0x05 and little-endian value 1800.
+
+Not performed in this environment:
+- Full Android APK build (Android SDK/Gradle build environment not available here).
+- Full Arduino/Seeed nRF52 board compile (Arduino board core not available here).

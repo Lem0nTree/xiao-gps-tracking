@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="app_background">#F5F6F8</color>
+    <color name="surface">#FFFFFFFF</color>
+    <color name="surface_subtle">#FFF0F2F4</color>
+    <color name="surface_border">#FFE2E5E9</color>
+    <color name="text_primary">#FF171A1F</color>
+    <color name="text_secondary">#FF626A75</color>
+    <color name="text_tertiary">#FF8A929D</color>
+    <color name="track_future">#FFB9C0CA</color>
+    <color name="accent">#FF1E6BFF</color>
+    <color name="success">#FF168A55</color>
+    <color name="warning">#FFC77700</color>
+    <color name="danger">#FFCA3A45</color>
+    <color name="disabled">#FFD9DDE2</color>
+    <color name="secondary_disabled">#FFE9EBEE</color>
+    <color name="danger_surface">#FFFFF2F3</color>
+    <color name="danger_disabled_surface">#FFF0F1F2</color>
+    <color name="map_overlay">#EEFFFFFF</color>
+
+    <color name="primary_button_bg">#FF171A1F</color>
+    <color name="primary_button_text">#FFFFFFFF</color>
+
+    <color name="status_neutral_bg">#FFF0F2F4</color>
+    <color name="status_busy_bg">#FFFFF4DE</color>
+    <color name="status_connected_bg">#FFE8F6EF</color>
+    <color name="status_error_bg">#FFFFECEE</color>
+</resources>

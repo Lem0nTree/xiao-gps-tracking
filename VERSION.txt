@@ -1,0 +1,7 @@
+XIAO GPS Tracker
+Firmware: 1.5.0
+Android app: 1.5.0
+Android versionCode: 15
+Protocol INFO: 65-byte release-1 extension
+Protocol addition: CMD_SET_INTERVAL 0x05
+Default GPS interval: 1800 seconds (30 min)
