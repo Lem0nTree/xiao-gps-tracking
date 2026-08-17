@@ -1,275 +1,134 @@
-# XIAO GPS Tracker 1.5.0
+# XIAO GPS Tracker
 
-Private GPS logger for the Seeed Studio XIAO nRF52840 + 5 V ATGM GPS breakout, with a native Android companion app.
+**A compact, private, low-cost GPS tracker built from accessible maker hardware.**
 
-## 1.5 highlights
+Log a route without a SIM card, subscription, or cloud account. The tracker stores positions locally, then sends them over Bluetooth to an Android phone whenever you want to view or export the journey.
 
-- GPS wake interval is configurable from the Android phone and persisted on the XIAO.
-- Presets: **1 min, 15 min, 30 min, 1 hour, 2 hours, 3 hours**.
-- Default after a fresh install/migration is **30 minutes**.
-- Battery profile redesigned for the 5-pin GPS carrier with no exposed VBAT.
-- BLE remains slowly discoverable, but the phone connection automatically closes after idle time.
-- Android action bar is simplified: Connect, Sync, and one **⋮ More** menu.
-- GPX, CSV, and Clear History moved into **More**.
-- Timeline navigation, dark mode, OpenFreeMap/MapLibre, local archive, bonded-owner security, and safe system-bar insets are retained.
+![Render of the printable XIAO GPS Tracker enclosure](enclosure/xiao-gps-tracker-enclosure.png)
 
-## Hardware wiring
+The project combines a Seeed Studio XIAO nRF52840, an inexpensive GPS receiver, a small LiPo battery, a native Android companion app, and a printable enclosure.
 
-The GPS carrier shown in the supplied photos exposes:
+## Why this tracker?
 
-```text
-5V
-RX
-TX
-GND
-PPS
-```
+- **No monthly fee** — no SIM card and no data plan.
+- **Private by design** — tracks stay on the device and your phone.
+- **Battery-conscious** — the GPS can be completely switched off between fixes.
+- **Configurable** — choose a point every 1, 15, or 30 minutes, or every 1, 2, or 3 hours.
+- **Large offline history** — more than 104,000 positions fit in the onboard circular log.
+- **Easy phone sync** — connect only when needed; logging continues without the phone.
+- **Useful exports** — save a journey as GPX or CSV.
+- **Open maps** — the app uses MapLibre and OpenFreeMap, with light and dark themes.
+- **Pocket-size hardware** — an enclosure is included as STL, 3MF, and Fusion 360 source.
 
-For a 300 mAh 1S LiPo:
+## Built for longer battery life
 
-```text
-300 mAh LiPo
-   ├────────────────────> XIAO BAT
-   │
-   └──> 3.7 V → 5 V boost/load switch
-                    │
-                    ├── 5 V OUT ───> GPS 5V
-                    └── EN <──────── XIAO D1
+The reference build uses a small **300 mAh LiPo**. Battery use changes dramatically with the selected recording interval:
 
-GPS TX  ────────────────────────────> XIAO D7 / RX
-GPS RX  <──────────────────────────── XIAO D6 / TX
-GPS GND ───────────────────────────── XIAO GND / boost GND
-GPS PPS ───────────────────────────── optional / unused
-```
+- At **1 minute**, the GPS stays powered after it gets a fix. This gives the most detailed route and uses the most energy.
+- At **15 minutes or longer**, the tracker removes power from the GPS between points and wakes it shortly before the next point is due.
+- BLE advertises slowly, and the Android app disconnects automatically after inactivity.
+- The onboard flash enters deep power-down when it is not being used.
 
-**D1 is an enable signal only. Do not power the GPS directly from D1.**
+In practice, this design can move a tiny battery from an hours-oriented high-detail profile toward **days or potentially weeks at longer intervals**. Actual runtime depends on satellite visibility, time-to-fix, the GPS board, battery health, temperature, and especially the boost converter's shutdown current. No fixed runtime is claimed until the exact hardware build has been bench-tested.
 
-See `WIRING_300MAH.md` for the full wiring notes.
+## What you need
 
-## Firmware setup
+AliExpress changes listings and sellers frequently, so these are non-affiliate search links rather than endorsements of a particular shop.
 
-Use the non-mbed **Seeed nRF52 Boards** Arduino core and select:
+| Component | What to look for | AliExpress |
+| --- | --- | --- |
+| Seeed Studio XIAO nRF52840 | The standard nRF52840 board; Sense is not required | [Search](https://www.aliexpress.com/w/wholesale-xiao-nrf52840.html) |
+| ATGM336H-compatible GPS breakout | A 5 V board exposing `5V`, `RX`, `TX`, `GND`, and optionally `PPS` | [Search](https://www.aliexpress.com/w/wholesale-atgm336h-gps-module.html) |
+| 300 mAh 1S LiPo | 3.7 V protected cell that physically fits the enclosure | [Search](https://www.aliexpress.com/w/wholesale-300mah-3.7v-lipo-battery.html) |
+| 3.7 V to 5 V boost converter | Must have an enable pin and low shutdown/quiescent current | [Search](https://www.aliexpress.com/w/wholesale-3.7v-to-5v-boost-enable.html) |
+| Small slide switch | Optional physical master power switch | [Search](https://www.aliexpress.com/w/wholesale-mini-slide-switch.html) |
 
-```text
-Tools → Board → Seeed nRF52 Boards → Seeed XIAO nRF52840
-```
+> [!IMPORTANT]
+> Check dimensions, pin labels, logic levels, polarity, and LiPo connector wiring before ordering. Similar-looking marketplace modules are not always electrically equivalent.
 
-Install:
+## How it works
 
-1. TinyGPSPlus
-2. Adafruit SPIFlash
-3. Adafruit TinyUSB Library
+1. The GPS receiver obtains a position and the XIAO saves it to onboard flash.
+2. The tracker sleeps or power-gates the GPS until the next configured interval.
+3. The Android app connects over bonded BLE to sync, browse, and export the route.
 
-Open:
+The first bonded phone becomes the owner. A hardware recovery procedure can change the owner without erasing the route history.
 
-```text
-firmware/XiaoGpsTracker/XiaoGpsTracker.ino
-```
+## Android companion app
 
-Change the example BLE pairing PIN before deployment:
+The native Android app shows tracker status, battery-saving mode, the selected wake interval, an interactive map, and a time-based route timeline. It can sync the local log over BLE and export tracks as GPX or CSV without sending them to a cloud service.
 
-```cpp
-static const char BLE_PAIRING_PIN[] = "482731";
-```
+<p align="center">
+  <img src="docs/images/xiao-tracker-android-app.jpg" alt="XIAO Tracker Android app showing live status, GPS wake interval, map, and timeline" width="360">
+</p>
 
-Arduino Serial Monitor is **115200 baud**. The GPS UART is **9600 baud**.
-
-## Configurable GPS interval
-
-The Android app sends the selected interval over the encrypted/bonded BLE channel.
-
-Allowed values:
+## Included in this repository
 
 ```text
-1 minute
-15 minutes
-30 minutes
-1 hour
-2 hours
-3 hours
+firmware/   Arduino firmware, setup notes, and detailed wiring
+android/    Native Android companion app
+enclosure/  STL, 3MF, Fusion 360 source, render, and render script
+docs/       README images and project media
 ```
 
-The setting is saved in QSPI metadata and survives resets/power cycles.
+### Start here
 
-Firmware 1.5 migrates the old firmware-1.0 owner metadata to the new combined metadata format so the owner identity can be preserved while adding the interval setting.
+- [Firmware setup and technical details](firmware/README.md)
+- [300 mAh LiPo wiring guide](firmware/WIRING_300MAH.md)
+- [Android project](android/XiaoGpsTrackerApp)
+- [Printable enclosure](enclosure/Seeed_GPS_Tracker.stl)
+- [Release notes](RELEASE_NOTES.md)
 
-### Power behavior
+For the firmware, use the non-mbed **Seeed nRF52 Boards** Arduino core and change the example BLE pairing PIN before flashing. The Android project targets JDK 17.
 
-For the **1-minute** setting:
+## Future development
 
-- the GPS remains powered after the first valid fix;
-- this avoids forcing a cold start every minute on a carrier with no exposed VBAT;
-- this is the highest-power profile.
+The current BLE tracker is the foundation for several planned variants built around the same compact, local-first platform. These ideas are a roadmap and are **not implemented in the current release**.
 
-For **15 minutes and longer**:
+### RF version
 
-1. a valid point is saved;
-2. the GPS 5 V boost is disabled;
-3. the XIAO keeps BLE advertising slowly;
-4. the GPS wakes **60 seconds before** the next point is due;
-5. once a satellite fix is obtained in that pre-wake window, the GPS stays powered so it keeps lock until the due timestamp;
-6. the point is stored and GPS power is removed again.
+- Add a **LoRa radio** for long-range, low-power position and status communication beyond normal Bluetooth range.
+- Explore **Meshtastic integration** so compatible nodes can relay tracker data through an off-grid LoRa mesh.
+- Retain local flash logging when a radio link or gateway is unavailable.
 
-If the receiver cannot get an eligible fix within 120 seconds of waking, it sleeps for 60 seconds before retrying.
+### SIM version
 
-This is designed around the reality that the 5-pin carrier does not expose VBAT: long intervals benefit from full power gating, while the one-minute interval does not.
+- Integrate a **SIM800L GSM/GPRS module** for remote position updates where compatible 2G service is still available.
+- Add store-and-forward behavior so the tracker can upload queued positions after coverage returns.
+- Redesign the power stage for the SIM800L's transmission-current peaks.
 
-## BLE power behavior
+> [!NOTE]
+> SIM800L depends on 2G service, which has already been retired in some countries and networks. Regional network compatibility must be checked before developing or buying parts for this variant.
 
-The XIAO advertises continuously at a slow interval so the phone can find it without a physical wake button.
+### Long-autonomy version
 
-It does **not** need to remain connected.
+- Replace the small pouch cell with a protected, quality **18650 Li-ion cell** for substantially more stored energy.
+- Develop a larger enclosure with safe cell retention and service access.
+- Profile every always-on load and tune the GPS, BLE, LoRa, or Meshtastic duty cycle for extended unattended operation.
 
-The Android app:
+Future autonomy targets will be published only after complete hardware builds have been measured under representative conditions.
 
-- connects when you press **Connect**;
-- reads tracker state / changes settings / syncs records;
-- automatically disconnects after roughly one minute of BLE inactivity;
-- keeps the downloaded timeline fully usable after BLE disconnects.
+## Storage capacity
 
-The tracker resumes slow advertising after disconnect.
+The tracker holds 104,244 GPS points before its circular log overwrites the oldest entries. That is approximately:
 
-## Storage
+| Interval | On-device history |
+| --- | ---: |
+| 1 minute | 72 days |
+| 15 minutes | 3.0 years |
+| 30 minutes | 5.9 years |
+| 1 hour | 11.9 years |
+| 2 hours | 23.8 years |
+| 3 hours | 35.7 years |
 
-Each GPS record is 20 bytes:
+Points already synced to Android remain in the phone archive even after the tracker eventually overwrites its oldest records.
 
-- sequence number
-- UTC Unix timestamp
-- latitude × 10^7
-- longitude × 10^7
-- HDOP × 100
-- satellite count
-- CRC-8
+## Project status
 
-The circular log contains 104,244 records.
+The Android app builds successfully in the current workspace. Firmware behavior and the battery strategy are implemented, but battery-duration figures still require measurement on the exact GPS, boost converter, battery, and enclosure assembly used for a build.
 
-Approximate theoretical history before overwrite:
+This is a personal/offline logger, not a live anti-theft or emergency tracker: it has no cellular connection and does not continuously report its location to a remote service.
 
-```text
-1 min   ≈ 72 days
-15 min  ≈ 3.0 years
-30 min  ≈ 5.9 years
-1 hour  ≈ 11.9 years
-2 hours ≈ 23.8 years
-3 hours ≈ 35.7 years
-```
+## License
 
-The phone archive is independent: already-synced points remain on Android even after the XIAO circular buffer eventually overwrites them.
-
-## Android app 1.5.0
-
-Open:
-
-```text
-android/XiaoGpsTrackerApp
-```
-
-The project uses JDK 17 and keeps the Kotlin compiler block outside `android {}`:
-
-```kotlin
-kotlin {
-    compilerOptions {
-        jvmTarget = org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17
-    }
-}
-```
-
-### Main controls
-
-The bottom action row is intentionally minimal:
-
-- **Connect**
-- **Sync track**
-- **⋮ More**
-
-`More` contains:
-
-- Export GPX
-- Export CSV
-- Clear history
-
-The Live Status card also contains the current **GPS wake interval**. Tap it while connected to choose another preset.
-
-### GPS interval selector
-
-The phone shows:
-
-```text
-1 minute · high power
-15 minutes
-30 minutes · recommended
-1 hour
-2 hours
-3 hours
-```
-
-After selection, firmware persists the new value and returns the updated tracker INFO packet.
-
-### Timeline
-
-The timeline is based on real UTC timestamps, not record number.
-
-Scrubbing the slider:
-
-- selects the nearest recorded timestamp;
-- shows exact local date/time;
-- moves the map marker;
-- shows coordinates, satellites, HDOP, and elapsed time;
-- highlights the travelled route and mutes the later route.
-
-This remains useful even when the tracker is recording only once every 30 minutes or several hours.
-
-### Dark mode
-
-The app retains the DayNight theme and moon/sun control. The MapLibre basemap switches between OpenFreeMap light and dark styles.
-
-## BLE protocol addition in 1.5
-
-New command:
-
-```text
-0x05 CMD_SET_INTERVAL
-payload: uint32 little-endian seconds
-```
-
-Accepted payload values are only:
-
-```text
-60, 900, 1800, 3600, 7200, 10800
-```
-
-The command requires the same encrypted, bonded owner connection as all other tracker commands.
-
-The existing 65-byte INFO packet is retained; its `logIntervalSeconds` field now reports the persisted configured interval and the firmware version reports `1.5.0`.
-
-## Owner-phone recovery
-
-The first successfully bonded phone is the owner.
-
-To replace it without deleting GPS history or the configured interval:
-
-1. power off;
-2. connect **D0 to GND**;
-3. power/reset and hold D0 low for at least 5 seconds;
-4. release D0;
-5. pair the new phone.
-
-The owner identity is cleared; the GPS log and configured wake interval are preserved.
-
-## Interval troubleshooting in 1.5.1
-
-When changing the GPS interval, Android Logcat should show:
-
-```text
-XiaoGpsBle: NUS RX write start type=0x5 ...
-XiaoGpsBle: NUS RX write completed status=0 ...
-XiaoGpsProtocol: RX type=0x84 payload=1
-```
-
-Then Android requests INFO and verifies that the value persisted.
-
-If the app shows:
-
-- `Firmware does not support this command` — the XIAO is still running firmware older than 1.5.
-- `Could not save the setting to tracker flash` — QSPI metadata persistence failed.
-- `Unsupported GPS interval` — the firmware rejected a value outside the six supported presets.
+See [LICENSE](LICENSE).

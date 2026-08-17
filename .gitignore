@@ -4,3 +4,4 @@ local.properties
 **/build/
 *.iml
 .DS_Store
+.codex-remote-attachments/
