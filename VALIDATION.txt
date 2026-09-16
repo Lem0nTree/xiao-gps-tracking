@@ -4,6 +4,31 @@ This record separates software/source checks from tests that require the
 assembled hardware. It contains no measured current, runtime, or calibration
 result.
 
+BLUETOOTH STARTUP / SCAN FIX 2.1.1 (2026-09-16)
+
+PASS - Reproduced against firmware 2.1.0 in the fake-flash host harness:
+       valid v2 metadata plus an erase failure makes loadOwnerLock fail,
+       which setup treats as fatal before Bluetooth starts.
+PASS - Patched firmware loads valid v1/v2 metadata without erases or writes,
+       preserving original flash bytes and owner/settings even when writes
+       fail. An explicit successful settings save still upgrades to v3.
+PASS - Existing firmware motion/profile host suites pass after the repair.
+PASS - Target build with Seeed nRF52 1.1.13, Seeeduino:nrf52:xiaonRF52840:
+       172488 bytes program, 19380 bytes RAM.
+PASS - Android protocol/presentation JVM suite: 11 tests (Kotlin 2.3.0,
+       JUnit 4.13.2), including tracking-profile compatibility.
+PASS - Changed BleManager compiles against Android API 36 and AndroidX Core
+       1.17.0. Independent source review confirms active-session checks and
+       timeout cancellation for discovery, scan failure, stop and restart.
+BLOCKED - Full Android Gradle test/APK build: no configured Android SDK.
+          JVM tests and the direct BleManager compile do not cover real BLE.
+ADDED - Checked BLE stack/service/advertising initialization and repeating
+        fatal-stage output; periodic actual advertising/connection diagnostics.
+PENDING - Physical confirmation of the reported connection problem: no board
+          USB serial trace or radio observation is available in this workspace.
+          The simulated startup failure is established; it is not proof that
+          flash writes failed on the user's tracker.
+
 POINT-TO-POINT PROFILE (2026-09-16)
 
 PASS - Firmware 2.1.0 target build with Seeed nRF52 core 1.1.13,

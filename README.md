@@ -117,7 +117,7 @@ change the owner without erasing the route history or saved wake settings.
 
 ## Android companion app
 
-The Android app (`2.1.0`, versionCode `21`) shows tracker status, the
+The Android app (`2.1.1`, versionCode `22`) shows tracker status, the
 Interval/Smart selector, tracking profiles, map, and time-based route timeline.
 Choose the GPS mode first: Interval shows the logging interval controls, while
 Smart shows tracking profiles and hides the interval controls. The saved

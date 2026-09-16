@@ -49,10 +49,11 @@ static const uint32_t SECTOR_SIZE = 4096;
 MetadataRecord disk{}, metadataRecord{};
 struct FakeFlash {
   bool fail = false;
-  bool eraseSector(int) { return !fail; }
+  int erases = 0, writes = 0;
+  bool eraseSector(int) { erases++; return !fail; }
   void waitUntilReady() {}
   size_t writeBuffer(int, const uint8_t* data, size_t n) {
-    memcpy(&disk, data, n); return n;
+    writes++; memcpy(&disk, data, n); return n;
   }
   size_t readBuffer(int, uint8_t* data, size_t n) {
     memcpy(data, &disk, n); return n;
@@ -144,12 +145,19 @@ int main() {
   disk.reserved[METADATA_RESERVED_SENSITIVITY] = 2;
   disk.reserved[METADATA_RESERVED_PROFILE] = 255;
   seal(disk);
+  MetadataRecord beforeBoot = disk;
+  const int bootErases = flash.erases, bootWrites = flash.writes;
+  flash.fail = true; // Reads work; upgrade must boot even if writes cannot.
   assert(loadOwnerLock());
-  assert(disk.version == METADATA_VERSION_V3 && metadataRecordValid(disk));
+  assert(disk.version == METADATA_VERSION_V2 && metadataRecordValid(disk));
+  assert(memcmp(&disk, &beforeBoot, sizeof(disk)) == 0);
+  assert(flash.erases == bootErases && flash.writes == bootWrites);
+  flash.fail = false;
   assert(ownerSet && metadataRecord.addr[0] == 42 && logIntervalSeconds == 900);
   assert(trackingMode == TRACKING_SMART && smartSensitivity == 2);
   assert(smartTrackingProfile == SMART_PROFILE_CONTINUOUS);
   assert(setSmartConfig(TRACKING_SMART, 1, SMART_PROFILE_POINT_TO_POINT));
+  assert(disk.version == METADATA_VERSION_V3 && metadataRecordValid(disk));
   smartTrackingProfile = 0;
   assert(loadOwnerLock() && smartTrackingProfile == SMART_PROFILE_POINT_TO_POINT);
   assert(clearOwnerLock());
@@ -165,10 +173,15 @@ int main() {
   flash.fail = false;
   disk.version = METADATA_VERSION_V1; disk.ownerSet = 1;
   disk.reserved[0] = disk.reserved[1] = disk.reserved[2] = 255; seal(disk);
+  beforeBoot = disk;
+  flash.fail = true;
   assert(loadOwnerLock() && trackingMode == TRACKING_INTERVAL);
+  assert(memcmp(&disk, &beforeBoot, sizeof(disk)) == 0);
+  flash.fail = false;
   assert(ownerSet && logIntervalSeconds == 900 && smartSensitivity == 1 && smartTrackingProfile == 0);
+  disk.version = METADATA_VERSION_V3; disk.reserved[0] = 1; disk.reserved[1] = 1;
   disk.reserved[2] = 2; seal(disk); assert(!metadataRecordValid(disk));
-  puts("PASS v1/v2 migration, persisted profile reload, owner reset, validation and save rollback");
+  puts("PASS v1/v2 read-only boot with failing flash writes, upgrade on save, owner reset and rollback");
 
   trackingMode = TRACKING_SMART; smartTrackingProfile = SMART_PROFILE_POINT_TO_POINT;
   gps.hdop.raw = 150; gps.satellites.raw = 6;

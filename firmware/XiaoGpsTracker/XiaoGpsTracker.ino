@@ -50,7 +50,7 @@
 // ---------------- User settings ----------------
 
 static const char BLE_DEVICE_NAME[] = "XIAO-GPS";
-static const char FW_VERSION[] = "2.1.0";
+static const char FW_VERSION[] = "2.1.1";
 static const char BLE_PAIRING_PIN[] = "482731"; // CHANGE THIS, exactly 6 digits
 static const uint32_t DEFAULT_LOG_INTERVAL_SECONDS = 1800; // 30 min
 static const uint32_t GPS_BAUD = 9600;
@@ -1387,9 +1387,11 @@ bool loadOwnerLock() {
           SMART_DEFAULT_SENSITIVITY;
       smartSensitivity = SMART_DEFAULT_SENSITIVITY;
       smartTrackingProfile = SMART_PROFILE_CONTINUOUS;
-      DBG_PRINTLN("Migrating v1 metadata to v3 (Interval mode preserved).");
+      // Decode old settings without erasing their only persistent copy during
+      // boot. The next explicit settings/owner save writes the current format.
+      DBG_PRINTLN("Loaded v1 metadata (Interval preserved; format upgrade deferred until save).");
       flashSleep();
-      return persistMetadata();
+      return true;
     }
 
     trackingMode = current.reserved[METADATA_RESERVED_MODE] == TRACKING_SMART
@@ -1398,7 +1400,13 @@ bool loadOwnerLock() {
     smartTrackingProfile = current.version == METADATA_VERSION_V3
         ? current.reserved[METADATA_RESERVED_PROFILE] : SMART_PROFILE_CONTINUOUS;
     flashSleep();
-    if (current.version == METADATA_VERSION_V2) return persistMetadata();
+    // A valid v2 record is enough to boot, including its owner lock. Requiring
+    // a v3 rewrite here made an otherwise readable tracker stop before BLE
+    // advertising on an erase/write failure. persistMetadata() upgrades it
+    // when the user next saves settings, with the normal command error path.
+    if (current.version == METADATA_VERSION_V2) {
+      DBG_PRINTLN("Loaded v2 metadata (Continuous profile; format upgrade deferred until save).");
+    }
     return true;
   }
 
@@ -2572,6 +2580,9 @@ void serviceGpsDiagnostics() {
   firstGpsDiag = false;
   lastGpsDiagMs = now;
 
+  DBG_PRINTF("BLE DIAG advertising=%u connected=%u\n",
+             Bluefruit.Advertising.isRunning() ? 1U : 0U,
+             activeConnHandle != BLE_CONN_HANDLE_INVALID ? 1U : 0U);
   DBG_PRINTF("TRACKING DIAG saved=%s runtime=%s fallback=%u\n",
              trackingModeLabel(trackingMode),
              smartRuntimeActive() ? "Smart" : "Interval",
@@ -2816,7 +2827,7 @@ void sendInfo() {
   putU16(payload + 60, 0); // reserved battery mV
   payload[62] = 2;
   payload[63] = 1;
-  payload[64] = 0;
+  payload[64] = 1;
 
   sendPacket(RSP_INFO, payload, sizeof(payload));
 }
@@ -3179,9 +3190,18 @@ void securedCallback(uint16_t connHandle) {
   }
 }
 
+void haltStartup(const char* message) {
+  // Repeat so a Serial Monitor opened after boot still identifies the failed
+  // stage. A powered board is not necessarily an advertising BLE peripheral.
+  while (true) {
+    DBG_PRINTLN(message);
+    delay(5000);
+  }
+}
+
 void setupBle() {
   Bluefruit.configPrphBandwidth(BANDWIDTH_MAX);
-  Bluefruit.begin(1, 0);
+  if (!Bluefruit.begin(1, 0)) haltStartup("FATAL: BLE stack initialization failed");
   Bluefruit.setName(BLE_DEVICE_NAME);
   Bluefruit.setTxPower(0);
 
@@ -3205,18 +3225,20 @@ void setupBle() {
   // implementation. We explicitly establish the encrypted bond in the
   // connection callback, and handleCommand() independently requires
   // secured() + bonded() before accepting tracker commands.
-  bleuart.begin();
+  if (bleuart.begin() != NRF_SUCCESS) haltStartup("FATAL: BLE UART service initialization failed");
 
-  Bluefruit.Advertising.addFlags(BLE_GAP_ADV_FLAGS_LE_ONLY_GENERAL_DISC_MODE);
-  Bluefruit.Advertising.addTxPower();
-  Bluefruit.Advertising.addService(bleuart);
-  Bluefruit.ScanResponse.addName();
+  if (!Bluefruit.Advertising.addFlags(BLE_GAP_ADV_FLAGS_LE_ONLY_GENERAL_DISC_MODE) ||
+      !Bluefruit.Advertising.addTxPower() ||
+      !Bluefruit.Advertising.addService(bleuart) ||
+      !Bluefruit.ScanResponse.addName()) {
+    haltStartup("FATAL: BLE advertising payload setup failed");
+  }
   Bluefruit.Advertising.restartOnDisconnect(true);
   Bluefruit.Advertising.setInterval(160, 3200); // 100 ms fast, 2 s slow
   Bluefruit.Advertising.setFastTimeout(10);
-  Bluefruit.Advertising.start(0);
+  if (!Bluefruit.Advertising.start(0)) haltStartup("FATAL: BLE advertising start failed");
 
-  DBG_PRINTF("Advertising as %s, pairing PIN %s\n", BLE_DEVICE_NAME, BLE_PAIRING_PIN);
+  DBG_PRINTF("Advertising as %s\n", BLE_DEVICE_NAME);
   DBG_PRINTF("Owner lock: %s\n", ownerSet ? "SET" : "not set (first phone may pair)");
 }
 
@@ -3235,7 +3257,7 @@ void setup() {
     DBG_PRINTLN0();
     DBG_PRINTLN("XIAO GPS Logger starting");
     DBG_PRINTF("FW VERSION: %s\n", FW_VERSION);
-    DBG_PRINTLN("FW diagnostic build: point-to-point-1");
+    DBG_PRINTLN("FW diagnostic build: ble-startup-1");
     DBG_PRINTLN("USB Serial Monitor baud: 115200");
     DBG_PRINTF("GPS Serial1 baud: %lu\n", (unsigned long)GPS_BAUD);
   }
@@ -3259,8 +3281,7 @@ void setup() {
 #endif
 
   if (!flash.begin(flashDevices, 1)) {
-    DBG_PRINTLN("FATAL: P25Q16H QSPI flash not detected");
-    while (true) delay(1000);
+    haltStartup("FATAL: P25Q16H QSPI flash not detected");
   }
 
   DBG_PRINTF("QSPI JEDEC=0x%06lX size=%lu bytes\n",
@@ -3268,13 +3289,11 @@ void setup() {
              (unsigned long)flash.size());
 
   if (flash.size() < FLASH_SIZE_BYTES) {
-    DBG_PRINTLN("FATAL: unexpected flash size");
-    while (true) delay(1000);
+    haltStartup("FATAL: unexpected flash size");
   }
 
   if (!loadOwnerLock()) {
-    DBG_PRINTLN("FATAL: tracker metadata read failed");
-    while (true) delay(1000);
+    haltStartup("FATAL: tracker metadata read failed");
   }
 
   if (!initMpu6050()) {
@@ -3292,8 +3311,7 @@ void setup() {
   ownerResetRequested = checkOwnerResetPin();
 
   if (!scanFlash()) {
-    DBG_PRINTLN("FATAL: flash scan failed");
-    while (true) delay(1000);
+    haltStartup("FATAL: flash scan failed");
   }
 
   gpsEverHadFix = newestSeq != 0;

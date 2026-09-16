@@ -148,7 +148,7 @@ Interval behavior and reports `runtimeIntervalFallback`.
 
 ### Motion rearm diagnostic build
 
-The current startup banner is `FW diagnostic build: point-to-point-1`. The
+The current startup banner is `FW diagnostic build: ble-startup-1`. The
 post-v2.0 motion-rearm diagnostics remain available. Serial output now includes saved mode, actual runtime
 mode, fallback, Smart state, the real Smart cooldown, D2 level, interrupt count,
 motion-event count, and verification sample counts/rejection reasons. An
@@ -233,7 +233,11 @@ interval and uses three previously reserved bytes for `wakeMode`,
 `smartSensitivity`, and `trackingProfile`. Version-1 metadata migrates to
 Interval/Balanced/Continuous while preserving owner and interval. Version-2
 metadata preserves mode and sensitivity and defaults to Continuous, regardless
-of the old reserved profile byte. GPS records remain byte-for-byte compatible.
+of the old reserved profile byte. Valid v1/v2 settings are decoded in RAM
+without any flash erase/write during boot. The next successful settings or
+owner save persists metadata v3. An optional format upgrade therefore cannot
+prevent Bluetooth startup if the stored settings can already be read.
+GPS records remain byte-for-byte compatible.
 
 Owner reset (D0 held low during boot) clears only ownership. It preserves the
 route history, interval, wake mode, sensitivity, and tracking profile. Clearing
@@ -318,6 +322,21 @@ To replace the owner phone without deleting GPS history or wake settings:
 3. Power or reset it and hold D0 low for at least five seconds.
 4. Release D0.
 5. Pair the replacement phone.
+
+## Bluetooth startup diagnostics
+
+Firmware 2.1.1 verifies the BLE stack, UART service, advertising payload, and
+advertising start result. Serial output claims advertising only after a
+successful start. With USB connected, open Serial Monitor at 115200 baud and
+restart the tracker. A `FATAL:` line identifies a startup stage that failed;
+these lines repeat every five seconds. In normal operation, `BLE DIAG` reports
+`advertising=0/1` and `connected=0/1` every five seconds alongside GPS status.
+The startup banner is `ble-startup-1`. Pairing PINs are not logged.
+
+The Android 2.1.1 scanner preserves scan failures and connection/disconnection
+messages after discovery; its 12-second “not found” timeout applies only to the
+scan that is still active. These diagnostics distinguish no advertisements
+from a discovered tracker whose connection or pairing subsequently failed.
 
 ## Validation status
 

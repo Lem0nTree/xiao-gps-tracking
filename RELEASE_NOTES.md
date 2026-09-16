@@ -1,3 +1,16 @@
+# 2.1.1 — Bluetooth startup and scan recovery
+
+- Valid older tracker settings now load without a mandatory flash erase/write
+  before Bluetooth starts. The next successful settings or owner save writes
+  metadata v3. Owner identity, saved interval, and sensitivity are preserved.
+- Android scan sessions now cancel their own timeout and ignore stale callbacks.
+  A connection/pairing failure or scan error is no longer overwritten by
+  “XIAO-GPS not found,” and a previous scan cannot stop a subsequent scan.
+- Firmware checks Bluetooth stack, UART service, and advertising startup results.
+  Fatal startup messages repeat for a Serial Monitor opened after boot; periodic
+  diagnostics report actual advertising and connection state. Pairing PINs are
+  no longer included in serial output.
+
 # 2.1.0 — Point-to-point tracking
 
 - Smart Motion now offers Continuous and Point-to-point profiles in the app,

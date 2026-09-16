@@ -42,6 +42,17 @@ class BleManager(
     val adapter: BluetoothAdapter? get() = bluetoothManager.adapter
 
     private var scanner: BluetoothLeScanner? = null
+    private class ScanSession(
+        val token: Long,
+        val scanner: BluetoothLeScanner
+    ) {
+        lateinit var callback: ScanCallback
+        lateinit var timeout: Runnable
+    }
+
+    private val scanLock = Any()
+    private var nextScanToken = 0L
+    @Volatile private var activeScan: ScanSession? = null
     private var gatt: BluetoothGatt? = null
     private var rxCharacteristic: BluetoothGattCharacteristic? = null
     private var txCharacteristic: BluetoothGattCharacteristic? = null
@@ -163,6 +174,11 @@ class BleManager(
 
     @SuppressLint("MissingPermission")
     fun startScan() {
+        // Invalidate any previous session before validating the new request.
+        // This also handles permission or adapter state changing while a scan
+        // is already running.
+        stopScan()
+
         if (!hasRequiredPermissions()) {
             dispatchState("Bluetooth permission missing")
             return
@@ -178,17 +194,25 @@ class BleManager(
             return
         }
 
-        stopScan()
-
         // Connect is also a recovery action: dispose any half-open GATT session
         // left by an interrupted pairing/subscription attempt before scanning again.
         if (gatt != null || connectionInProgress) {
             resetGatt()
         }
 
-        dispatchState("Scanning for XIAO-GPS…")
-
-        scanner = a.bluetoothLeScanner
+        val bleScanner = try {
+            a.bluetoothLeScanner
+        } catch (error: Exception) {
+            val detail = error.message?.takeIf { it.isNotBlank() }
+                ?: error::class.simpleName
+                ?: "unknown error"
+            dispatchState("BLE scanner unavailable: $detail")
+            return
+        }
+        if (bleScanner == null) {
+            dispatchState("Bluetooth LE scanner unavailable")
+            return
+        }
 
         // The firmware advertises the Nordic UART Service UUID.
         val filter = ScanFilter.Builder()
@@ -199,20 +223,80 @@ class BleManager(
             .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
             .build()
 
-        scanner?.startScan(listOf(filter), settings, scanCallback)
+        val token = synchronized(scanLock) {
+            ++nextScanToken
+        }
+        val session = ScanSession(token, bleScanner)
+        session.callback = object : ScanCallback() {
+            @SuppressLint("MissingPermission")
+            override fun onScanResult(callbackType: Int, result: ScanResult) {
+                handleScanResult(session, result)
+            }
 
-        main.postDelayed({
-            if (gatt == null) {
-                stopScan()
+            override fun onScanFailed(errorCode: Int) {
+                handleScanFailed(session, errorCode)
+            }
+        }
+        session.timeout = Runnable {
+            if (!finishScan(session)) return@Runnable
+            if (gatt == null && !connectionInProgress) {
                 dispatchState("XIAO-GPS not found")
             }
-        }, 12_000)
+        }
+
+        synchronized(scanLock) {
+            activeScan = session
+            scanner = bleScanner
+        }
+
+        try {
+            bleScanner.startScan(listOf(filter), settings, session.callback)
+        } catch (error: Exception) {
+            finishScan(session)
+            val detail = error.message?.takeIf { it.isNotBlank() }
+                ?: error::class.simpleName
+                ?: "unknown error"
+            dispatchState("BLE scan could not start: $detail")
+            return
+        }
+
+        // A synchronous callback can finish the session before startScan()
+        // returns, so only arm the timeout while this exact session is active.
+        if (isActiveScan(session)) {
+            dispatchState("Scanning for XIAO-GPS…")
+            main.postDelayed(session.timeout, 12_000)
+        }
     }
 
     @SuppressLint("MissingPermission")
     fun stopScan() {
-        if (!hasScanPermission()) return
-        runCatching { scanner?.stopScan(scanCallback) }
+        val session = activeScan ?: return
+        finishScan(session)
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun finishScan(session: ScanSession): Boolean {
+        // Clear the active identity before calling into the Bluetooth stack so
+        // callbacks arriving during teardown cannot affect a later scan.
+        val wasActive = synchronized(scanLock) {
+            if (activeScan !== session || activeScan?.token != session.token) {
+                false
+            } else {
+                activeScan = null
+                if (scanner === session.scanner) scanner = null
+                true
+            }
+        }
+        if (!wasActive) return false
+
+        main.removeCallbacks(session.timeout)
+
+        // The session is still invalidated even when permission was revoked;
+        // attempting stopScan without BLUETOOTH_SCAN can itself throw.
+        if (hasScanPermission()) {
+            runCatching { session.scanner.stopScan(session.callback) }
+        }
+        return true
     }
 
     @SuppressLint("MissingPermission")
@@ -354,7 +438,10 @@ class BleManager(
 
     @SuppressLint("MissingPermission")
     private fun connect(device: BluetoothDevice) {
-        if (!hasConnectPermission()) return
+        if (!hasConnectPermission()) {
+            dispatchState("Bluetooth permission missing")
+            return
+        }
         if (connectionInProgress || gatt != null) return
 
         connectionInProgress = true
@@ -385,17 +472,27 @@ class BleManager(
         }
     }
 
-    private val scanCallback = object : ScanCallback() {
-        @SuppressLint("MissingPermission")
-        override fun onScanResult(callbackType: Int, result: ScanResult) {
-            if (!connectionInProgress && gatt == null) {
-                connect(result.device)
-            }
+    private fun isActiveScan(session: ScanSession): Boolean {
+        return synchronized(scanLock) {
+            activeScan === session && activeScan?.token == session.token
         }
+    }
 
-        override fun onScanFailed(errorCode: Int) {
-            dispatchState("BLE scan failed: $errorCode")
+    private fun handleScanResult(session: ScanSession, result: ScanResult) {
+        val process = process@{
+            if (!isActiveScan(session) || connectionInProgress || gatt != null) return@process
+            if (finishScan(session)) connect(result.device)
         }
+        if (Looper.myLooper() == Looper.getMainLooper()) process()
+        else main.post { process() }
+    }
+
+    private fun handleScanFailed(session: ScanSession, errorCode: Int) {
+        val process = {
+            if (finishScan(session)) dispatchState("BLE scan failed: $errorCode")
+        }
+        if (Looper.myLooper() == Looper.getMainLooper()) process()
+        else main.post { process() }
     }
 
     private val gattCallback = object : BluetoothGattCallback() {

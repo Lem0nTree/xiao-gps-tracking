@@ -1,7 +1,7 @@
 XIAO GPS Tracker Smart Motion
-Firmware: 2.1.0
-Android app: 2.1.0
-Android versionCode: 21
+Firmware: 2.1.1
+Android app: 2.1.1
+Android versionCode: 22
 Wake modes: Interval (0), Smart motion (1)
 Protocol INFO: 65-byte layout unchanged
 Protocol commands: CMD_GET_SMART_INFO 0x06; CMD_SET_SMART_CONFIG 0x07
@@ -12,5 +12,6 @@ Default GPS interval: 1800 seconds (30 min)
 Default Smart sensitivity: Balanced (160 mg starting value)
 Tracking profiles: Continuous (0), Point-to-point (1); default Continuous
 Point-to-point: 600s quiet stop timer; 300s acquisition; >=6 sats, HDOP<=1.50
-Metadata: version 3; wakeMode + smartSensitivity + trackingProfile in reserved bytes
+Metadata: version 3 on save; valid v1/v2 loaded read-only during boot
+Metadata fields: wakeMode + smartSensitivity + trackingProfile in reserved bytes
 Hardware: 1000 mAh 1S LiPo; GY-521/MPU6050 @0x68; GPS on 3V3; D1 unused
