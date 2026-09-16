@@ -50,6 +50,9 @@ class MainActivity : AppCompatActivity(), BleManager.Listener {
     private lateinit var downloadButton: Button
     private lateinit var intervalButton: Button
     private lateinit var intervalSummaryText: TextView
+    private lateinit var wakeModeButton: Button
+    private lateinit var sensitivityButton: Button
+    private lateinit var smartDetailsText: TextView
     private lateinit var moreButton: Button
     private lateinit var progressBar: ProgressBar
     private lateinit var mapView: MapView
@@ -70,6 +73,19 @@ class MainActivity : AppCompatActivity(), BleManager.Listener {
     private var downloadStartLocalCount = 0
     private var pendingExport: ExportFormat? = null
     private var pendingIntervalSeconds: Int? = null
+    private var smartInfo: SmartInfo? = null
+    private var smartInfoRequested = false
+    private var smartConfigurationUnsupported = false
+    private var selectedWakeMode = WakeMode.INTERVAL
+    private var selectedSensitivity = SmartSensitivity.BALANCED
+
+    private data class PendingSmartConfig(
+        val mode: WakeMode,
+        val sensitivity: SmartSensitivity,
+        var acknowledged: Boolean = false
+    )
+
+    private var pendingSmartConfig: PendingSmartConfig? = null
 
     private val intervalCommandTimeout = Runnable {
         val requested = pendingIntervalSeconds ?: return@Runnable
@@ -95,6 +111,32 @@ class MainActivity : AppCompatActivity(), BleManager.Listener {
         }, 1200)
     }
     private var infoRetryCount = 0
+
+    private val smartConfigTimeout = Runnable {
+        val pending = pendingSmartConfig ?: return@Runnable
+        if (!pending.acknowledged) {
+            pendingSmartConfig = null
+            renderSmartControls()
+            toast("Tracker did not acknowledge the Smart Motion setting")
+            setActivity("Smart Motion setting was not acknowledged")
+            armBleIdleDisconnect()
+            return@Runnable
+        }
+
+        setActivity("No Smart Motion read-back yet • checking tracker again…")
+        if (!requestSmartInfo()) {
+            failSmartConfig("Tracker did not confirm the Smart Motion setting")
+            return@Runnable
+        }
+
+        // A response arriving before this second deadline completes the
+        // persistence check in handlePacket(RSP_SMART_INFO).
+        activityText.postDelayed({
+            if (pendingSmartConfig != null) {
+                failSmartConfig("Tracker did not confirm the Smart Motion setting")
+            }
+        }, 1500L)
+    }
 
     private val bleIdleDisconnect = Runnable {
         if (ble.isReady && pendingDownload.isEmpty()) {
@@ -169,6 +211,9 @@ class MainActivity : AppCompatActivity(), BleManager.Listener {
         downloadButton = findViewById(R.id.downloadButton)
         intervalButton = findViewById(R.id.intervalButton)
         intervalSummaryText = findViewById(R.id.intervalSummaryText)
+        wakeModeButton = findViewById(R.id.wakeModeButton)
+        sensitivityButton = findViewById(R.id.sensitivityButton)
+        smartDetailsText = findViewById(R.id.smartDetailsText)
         moreButton = findViewById(R.id.moreButton)
         progressBar = findViewById(R.id.progressBar)
         mapView = findViewById(R.id.mapView)
@@ -182,6 +227,7 @@ class MainActivity : AppCompatActivity(), BleManager.Listener {
         setConnectionState("Offline", ConnectionTone.NEUTRAL)
         gpsText.text = "Waiting for tracker"
         activityText.text = "Connect to view live GPS status"
+        renderSmartControls()
 
         setupMap(savedInstanceState)
         setupTimeline()
@@ -298,13 +344,13 @@ class MainActivity : AppCompatActivity(), BleManager.Listener {
     }
 
     private fun intervalSummary(seconds: Int): String = when (seconds) {
-        60 -> "GPS stays powered between fixes • highest battery use"
-        900 -> "GPS power-gated • 15-minute tracking"
-        1800 -> "GPS power-gated • recommended for 300 mAh"
-        3600 -> "GPS power-gated • low-power tracking"
-        7200 -> "GPS power-gated • extended battery"
-        10800 -> "GPS power-gated • maximum battery profile"
-        else -> "GPS power-gated"
+        60 -> "1-minute scheduled tracking • highest GPS activity"
+        900 -> "15-minute scheduled tracking"
+        1800 -> "30-minute scheduled tracking"
+        3600 -> "Hourly scheduled tracking"
+        7200 -> "2-hour scheduled tracking"
+        10800 -> "3-hour scheduled tracking"
+        else -> "Scheduled GPS tracking"
     }
 
     private fun armBleIdleDisconnect(delayMs: Long = 60_000L) {
@@ -324,11 +370,264 @@ class MainActivity : AppCompatActivity(), BleManager.Listener {
         return info.firmwareMajor == 1 && info.firmwareMinor >= 5
     }
 
+    private fun supportsSmartMotion(info: DeviceInfo?): Boolean {
+        return info != null && info.firmwareMajor >= 2
+    }
+
+    private fun smartModeLabel(mode: WakeMode): String = when (mode) {
+        WakeMode.INTERVAL -> "Interval"
+        WakeMode.SMART -> "Smart motion"
+        WakeMode.UNKNOWN -> "Unknown"
+    }
+
+    private fun sensitivityLabel(sensitivity: SmartSensitivity): String = when (sensitivity) {
+        SmartSensitivity.HIGH -> "High · 80 mg"
+        SmartSensitivity.BALANCED -> "Balanced · 160 mg"
+        SmartSensitivity.LOW -> "Low · 300 mg"
+        SmartSensitivity.UNKNOWN -> "Unknown"
+    }
+
+    private fun renderSmartControls() {
+        val info = deviceInfo
+        val supported = ble.isReady && supportsSmartMotion(info) && !smartConfigurationUnsupported
+        val actualMode = smartInfo?.mode ?: selectedWakeMode
+        val actualSensitivity = smartInfo?.sensitivity ?: selectedSensitivity
+        val busy = pendingSmartConfig != null
+
+        wakeModeButton.text = when {
+            !ble.isReady -> "Connect"
+            !supportsSmartMotion(info) -> "Interval"
+            smartConfigurationUnsupported -> "Unavailable"
+            smartInfo == null -> "Reading…"
+            else -> smartModeLabel(actualMode)
+        }
+        sensitivityButton.text = when {
+            !ble.isReady || !supportsSmartMotion(info) -> "Unavailable"
+            smartConfigurationUnsupported -> "Unavailable"
+            smartInfo == null -> "Reading…"
+            else -> sensitivityLabel(actualSensitivity)
+        }
+
+        wakeModeButton.isEnabled = supported && !busy && smartInfo != null
+        sensitivityButton.isEnabled = supported && !busy && smartInfo?.mode == WakeMode.SMART
+
+        smartDetailsText.text = when {
+            !ble.isReady -> "Connect to view Smart Motion status"
+            !supportsSmartMotion(info) || smartConfigurationUnsupported ->
+                "Smart Motion requires XIAO firmware 2.0+ • saved interval remains available"
+            smartInfo == null -> "Reading Smart Motion status…"
+            smartInfo?.mode == WakeMode.SMART ->
+                "5-second movement confirmation • Approximately two minutes between moving fixes • " +
+                    "GPS wake delay depends on standby capability"
+            else -> "Interval mode • Smart Motion is available on this tracker"
+        }
+
+        val intervalEditingAllowed = ble.isReady && supportsIntervalConfiguration(info) &&
+            !(supportsSmartMotion(info) && smartInfo == null && !smartConfigurationUnsupported) &&
+            (actualMode != WakeMode.SMART || smartConfigurationUnsupported)
+        intervalButton.isEnabled = intervalEditingAllowed && !busy
+        if (info != null && actualMode == WakeMode.SMART) {
+            intervalSummaryText.text =
+                "${intervalSummary(info.logIntervalSeconds)} • saved interval (used in Interval mode)"
+        }
+    }
+
+    private fun requestSmartInfo(): Boolean {
+        if (!ble.isReady || !supportsSmartMotion(deviceInfo) || smartConfigurationUnsupported) {
+            return false
+        }
+        smartInfoRequested = true
+        val started = ble.send(Protocol.smartInfoRequest())
+        if (!started) smartInfoRequested = false
+        return started
+    }
+
+    private fun sendSmartConfig(mode: WakeMode, sensitivity: SmartSensitivity) {
+        if (!ble.isReady || !supportsSmartMotion(deviceInfo) || smartConfigurationUnsupported) {
+            toast("Smart Motion is not available on this tracker")
+            return
+        }
+        if (pendingSmartConfig != null) {
+            toast("A Smart Motion setting is already being saved")
+            return
+        }
+
+        val pending = PendingSmartConfig(mode, sensitivity)
+        pendingSmartConfig = pending
+        cancelBleIdleDisconnect()
+        if (ble.send(Protocol.setSmartConfigRequest(mode, sensitivity))) {
+            selectedWakeMode = mode
+            selectedSensitivity = sensitivity
+            setActivity("Saving ${smartModeLabel(mode)} Smart Motion setting…")
+            renderSmartControls()
+            activityText.removeCallbacks(smartConfigTimeout)
+            activityText.postDelayed(smartConfigTimeout, 3500L)
+        } else {
+            pendingSmartConfig = null
+            renderSmartControls()
+            toast("Could not send Smart Motion setting")
+            armBleIdleDisconnect()
+        }
+    }
+
+    private fun failSmartConfig(message: String) {
+        activityText.removeCallbacks(smartConfigTimeout)
+        pendingSmartConfig = null
+        selectedWakeMode = smartInfo?.mode ?: WakeMode.INTERVAL
+        selectedSensitivity = smartInfo?.sensitivity ?: SmartSensitivity.BALANCED
+        renderSmartControls()
+        toast(message)
+        setActivity(message)
+        armBleIdleDisconnect()
+    }
+
+    private fun showWakeModeDialog() {
+        if (!ble.isReady || !supportsSmartMotion(deviceInfo) || smartInfo == null) {
+            toast("Smart Motion is not available on this tracker")
+            return
+        }
+
+        val choices = arrayOf("Interval", "Smart motion")
+        val checked = if (smartInfo?.mode == WakeMode.SMART) 1 else 0
+        AlertDialog.Builder(this)
+            .setTitle("GPS wake mode")
+            .setSingleChoiceItems(choices, checked) { dialog, which ->
+                val mode = if (which == 1) WakeMode.SMART else WakeMode.INTERVAL
+                val sensitivity = smartInfo?.sensitivity ?: selectedSensitivity
+                if (mode == smartInfo?.mode) {
+                    dialog.dismiss()
+                } else {
+                    sendSmartConfig(mode, sensitivity)
+                    dialog.dismiss()
+                }
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun showSensitivityDialog() {
+        val info = smartInfo
+        if (!ble.isReady || !supportsSmartMotion(deviceInfo) ||
+            info == null || info.mode != WakeMode.SMART
+        ) {
+            toast("Select Smart motion mode first")
+            return
+        }
+
+        val choices = arrayOf(
+            "High · 80 mg",
+            "Balanced · 160 mg",
+            "Low · 300 mg"
+        )
+        val checked = when (info.sensitivity) {
+            SmartSensitivity.HIGH -> 0
+            SmartSensitivity.BALANCED -> 1
+            SmartSensitivity.LOW -> 2
+            SmartSensitivity.UNKNOWN -> 1
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Movement sensitivity")
+            .setMessage("Higher sensitivity can wake for smaller movement.")
+            .setSingleChoiceItems(choices, checked) { dialog, which ->
+                val sensitivity = when (which) {
+                    0 -> SmartSensitivity.HIGH
+                    2 -> SmartSensitivity.LOW
+                    else -> SmartSensitivity.BALANCED
+                }
+                if (sensitivity == info.sensitivity) {
+                    dialog.dismiss()
+                } else {
+                    sendSmartConfig(WakeMode.SMART, sensitivity)
+                    dialog.dismiss()
+                }
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun smartStatusText(info: SmartInfo): String {
+        val state = if (info.mode == WakeMode.SMART) {
+            when (info.motionState) {
+                SmartMotionState.DISABLED -> "Smart Motion disabled"
+                SmartMotionState.ARMED -> "Armed"
+                SmartMotionState.VERIFYING -> "Confirming motion"
+                SmartMotionState.ACQUIRING -> "Waiting for GPS"
+                SmartMotionState.TRACKING -> "GPS receiver active"
+                SmartMotionState.COOLDOWN -> "Cooldown"
+                SmartMotionState.UNKNOWN -> "Smart Motion state unknown"
+            }
+        } else {
+            "Interval"
+        }
+
+        val hardware = buildList {
+            if (info.mode == WakeMode.SMART) {
+                if (info.runtimeIntervalFallback) add("Runtime Interval fallback")
+                if (!info.mpuPresent || !info.mpuInterruptArmed) add("MPU fault")
+                when {
+                    !info.cas12Verified -> add("GPS standby unavailable")
+                    info.cas12Active -> add("GPS standby active")
+                    else -> add("GPS standby ready")
+                }
+                if (info.gpsReceiverActive) add("GPS receiver active")
+            } else if (info.gpsReceiverActive) {
+                add("GPS receiver active")
+            } else {
+                add("GPS standby ready")
+            }
+        }.joinToString(" • ")
+        return "$state • $hardware"
+    }
+
+    private fun showSmartInfo(info: SmartInfo) {
+        selectedWakeMode = info.mode
+        selectedSensitivity = info.sensitivity
+        smartInfo = info
+        var persistenceVerified = false
+
+        if (pendingSmartConfig?.acknowledged == true) {
+            val pending = pendingSmartConfig ?: return
+            if (pending.mode == info.mode && pending.sensitivity == info.sensitivity) {
+                activityText.removeCallbacks(smartConfigTimeout)
+                pendingSmartConfig = null
+                persistenceVerified = true
+                armBleIdleDisconnect(20_000L)
+            } else {
+                failSmartConfig("Tracker read back a different Smart Motion setting")
+                return
+            }
+        }
+
+        val status = smartStatusText(info)
+        gpsText.setTextColor(
+            when {
+                info.mode == WakeMode.SMART && (info.runtimeIntervalFallback || info.mpuFault) ->
+                    getColor(R.color.danger)
+                info.motionState == SmartMotionState.ARMED && info.cas12Active ->
+                    getColor(R.color.success)
+                else -> getColor(R.color.warning)
+            }
+        )
+        setActivity(
+            if (persistenceVerified) {
+                "Smart Motion setting saved and verified • $status"
+            } else {
+                status
+            }
+        )
+        renderSmartControls()
+    }
+
     private fun finishIntervalUpdate(seconds: Int) {
         activityText.removeCallbacks(intervalCommandTimeout)
         pendingIntervalSeconds = null
+        // Firmware treats the legacy interval command as an explicit switch
+        // back to Interval mode, including on v2 trackers.
+        selectedWakeMode = WakeMode.INTERVAL
+        smartInfo = smartInfo?.copy(mode = WakeMode.INTERVAL)
         intervalButton.text = formatInterval(seconds)
         intervalSummaryText.text = intervalSummary(seconds)
+        renderSmartControls()
         setActivity("GPS interval set to ${formatInterval(seconds)}")
 
         // Read back the persisted value instead of trusting only the ACK.
@@ -342,6 +641,17 @@ class MainActivity : AppCompatActivity(), BleManager.Listener {
     private fun showIntervalDialog() {
         if (!ble.isReady) {
             toast("Connect to the tracker first")
+            return
+        }
+
+        if (smartInfo?.mode == WakeMode.SMART && !smartConfigurationUnsupported) {
+            toast("Switch GPS wake mode to Interval before editing the saved interval")
+            setActivity("Smart Motion is active • saved interval is shown but not editable")
+            return
+        }
+
+        if (supportsSmartMotion(deviceInfo) && smartInfo == null && !smartConfigurationUnsupported) {
+            toast("Reading the tracker wake mode first")
             return
         }
 
@@ -478,6 +788,14 @@ class MainActivity : AppCompatActivity(), BleManager.Listener {
             showIntervalDialog()
         }
 
+        wakeModeButton.setOnClickListener {
+            showWakeModeDialog()
+        }
+
+        sensitivityButton.setOnClickListener {
+            showSensitivityDialog()
+        }
+
         moreButton.setOnClickListener {
             showMoreMenu(it)
         }
@@ -537,8 +855,15 @@ class MainActivity : AppCompatActivity(), BleManager.Listener {
 
     override fun onReady() {
         downloadButton.isEnabled = true
-        intervalButton.isEnabled = true
+        intervalButton.isEnabled = false
         infoRetryCount = 0
+        smartInfo = null
+        smartInfoRequested = false
+        smartConfigurationUnsupported = false
+        pendingSmartConfig = null
+        selectedWakeMode = WakeMode.INTERVAL
+        selectedSensitivity = SmartSensitivity.BALANCED
+        renderSmartControls()
         setConnectionState("Connected", ConnectionTone.CONNECTED)
         connectButton.text = "Connected"
         connectButton.isEnabled = false
@@ -586,9 +911,16 @@ class MainActivity : AppCompatActivity(), BleManager.Listener {
         parser.reset()
         infoRetryCount = 0
         pendingIntervalSeconds = null
+        pendingSmartConfig = null
+        smartInfo = null
+        smartInfoRequested = false
+        smartConfigurationUnsupported = false
         cancelBleIdleDisconnect()
+        activityText.removeCallbacks(intervalCommandTimeout)
+        activityText.removeCallbacks(smartConfigTimeout)
         downloadButton.isEnabled = false
         intervalButton.isEnabled = false
+        renderSmartControls()
         connectButton.text = "Connect"
         connectButton.isEnabled = true
         setConnectionState("Offline", ConnectionTone.NEUTRAL)
@@ -608,6 +940,25 @@ class MainActivity : AppCompatActivity(), BleManager.Listener {
                 infoRetryCount = 0
                 deviceInfo = info
                 showDeviceInfo(info)
+
+                if (supportsSmartMotion(info)) {
+                    if (!smartInfoRequested && pendingSmartConfig == null &&
+                        !smartConfigurationUnsupported
+                    ) {
+                        requestSmartInfo()
+                    }
+                } else {
+                    smartInfo = null
+                    smartInfoRequested = false
+                    smartConfigurationUnsupported = false
+                    renderSmartControls()
+                }
+            }
+
+            Protocol.RSP_SMART_INFO -> {
+                val info = Protocol.parseSmartInfo(packet.payload) ?: return
+                smartInfoRequested = false
+                showSmartInfo(info)
             }
 
             Protocol.RSP_DATA_BATCH -> {
@@ -658,6 +1009,18 @@ class MainActivity : AppCompatActivity(), BleManager.Listener {
                             finishIntervalUpdate(applied)
                         }
                     }
+
+                    Protocol.CMD_SET_SMART_CONFIG -> {
+                        val pending = pendingSmartConfig ?: return
+                        pending.acknowledged = true
+                        setActivity("Smart Motion setting acknowledged • verifying read-back…")
+                        activityText.removeCallbacks(smartConfigTimeout)
+                        if (requestSmartInfo()) {
+                            activityText.postDelayed(smartConfigTimeout, 3500L)
+                        } else {
+                            failSmartConfig("Could not read back the Smart Motion setting")
+                        }
+                    }
                 }
             }
 
@@ -676,6 +1039,36 @@ class MainActivity : AppCompatActivity(), BleManager.Listener {
 
                 if (code == 1) {
                     retryTrackerInfoAfterSecurity()
+                } else if (pendingSmartConfig != null || smartInfoRequested) {
+                    activityText.removeCallbacks(smartConfigTimeout)
+                    val wasSetting = pendingSmartConfig != null
+                    pendingSmartConfig = null
+                    smartInfoRequested = false
+                    if (code == 2 || !wasSetting) smartConfigurationUnsupported = true
+                    renderSmartControls()
+
+                    val friendly = when (code) {
+                        2 -> if (wasSetting) {
+                            "Smart Motion is not supported by this tracker"
+                        } else {
+                            "Smart Motion status is not supported by this tracker"
+                        }
+
+                        3 -> if (wasSetting) {
+                            "Tracker rejected the Smart Motion setting"
+                        } else {
+                            "Tracker rejected the Smart Motion status request"
+                        }
+
+                        4 -> if (wasSetting) {
+                            "Could not save the Smart Motion setting to tracker flash"
+                        } else {
+                            "Could not read Smart Motion status"
+                        }
+                        else -> message
+                    }
+                    setActivity(friendly + " • saved interval remains available")
+                    toast(friendly)
                 } else {
                     if (pendingIntervalSeconds != null) {
                         pendingIntervalSeconds = null
@@ -716,9 +1109,9 @@ class MainActivity : AppCompatActivity(), BleManager.Listener {
 
         if (info.powerOptimizationEnabled && !info.gpsPowered) {
             gpsText.setTextColor(getColor(R.color.text_primary))
-            gpsStatus = "GPS sleeping"
+            gpsStatus = "GPS standby"
             gpsDetail = buildString {
-                append("Power save")
+                append("GPS standby")
                 if (info.gpsNextWakeSeconds > 0) {
                     append(" • next wake in ${info.gpsNextWakeSeconds}s")
                 }
@@ -780,9 +1173,11 @@ class MainActivity : AppCompatActivity(), BleManager.Listener {
 
         intervalButton.text = formatInterval(info.logIntervalSeconds)
         intervalSummaryText.text = intervalSummary(info.logIntervalSeconds)
-        intervalButton.isEnabled = ble.isReady && supportsIntervalConfiguration(info)
+        renderSmartControls()
 
-        setActivity("$gpsDetail  •  Last saved: $lastFix")
+        if (smartInfo == null || smartInfo?.mode != WakeMode.SMART) {
+            setActivity("$gpsDetail  •  Last saved: $lastFix")
+        }
         setConnectionState("Connected", ConnectionTone.CONNECTED)
         connectButton.text = "Connected"
         connectButton.isEnabled = false
@@ -1137,13 +1532,15 @@ class MainActivity : AppCompatActivity(), BleManager.Listener {
 
     override fun onDestroy() {
         cancelBleIdleDisconnect()
+        activityText.removeCallbacks(intervalCommandTimeout)
+        activityText.removeCallbacks(smartConfigTimeout)
         ble.close()
         mapView.onDestroy()
         super.onDestroy()
     }
 
     companion object {
-        private const val APP_VERSION = "1.5.1"
+        private const val APP_VERSION = "2.0.0"
         // OSM-derived vector basemap from OpenFreeMap.
         // No API key or registration is required by the public instance.
         private const val PREFS_NAME = "xiao_tracker_prefs"

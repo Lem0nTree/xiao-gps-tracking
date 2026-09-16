@@ -1,22 +1,73 @@
-XIAO GPS Tracker 1.5.0 validation
+XIAO GPS Tracker Smart Motion v2.0 validation record
 
-PASS - Android resource XML parsed successfully.
-PASS - Every R.id reference in MainActivity exists in activity_main.xml.
-PASS - Gradle versionName 1.5.0 / versionCode 15.
-PASS - kotlin { compilerOptions { jvmTarget = JvmTarget.JVM_17 } } is top-level.
-PASS - Firmware and Android agree on CMD_SET_INTERVAL = 0x05.
-PASS - Allowed interval presets are 60, 900, 1800, 3600, 7200, 10800 seconds.
-PASS - Default firmware interval is 1800 seconds (30 minutes).
-PASS - Firmware metadata includes persisted GPS interval and owner identity.
-PASS - Android More menu contains GPX, CSV, and Clear History actions.
-PASS - Android has BLE idle auto-disconnect.
-PASS - Firmware C++ brace/parenthesis structural balance check.
+This record separates software/source checks from tests that require the
+assembled hardware. It contains no measured current, runtime, or calibration
+result.
 
-Additional protocol test performed before packaging:
-- Protocol.kt + GpsRecord.kt compiled with kotlinc.
-- setIntervalRequest(1800) produced the expected 11-byte framed command
-  with command type 0x05 and little-endian value 1800.
+IMPLEMENTED / SOURCE-CONTRACT CHECKS
 
-Not performed in this environment:
-- Full Android APK build (Android SDK/Gradle build environment not available here).
-- Full Arduino/Seeed nRF52 board compile (Arduino board core not available here).
+PASS - Release identifiers are firmware 2.0.0, Android 2.0.0, versionCode 20.
+PASS - Wake modes are Interval = 0 and Smart = 1; the six persisted Interval
+       values remain 60, 900, 1800, 3600, 7200, and 10800 seconds.
+PASS - Smart mode retains the saved interval while selected; legacy
+       CMD_SET_INTERVAL (0x05) selects Interval mode.
+PASS - v2 protocol IDs are CMD_GET_SMART_INFO = 0x06,
+       CMD_SET_SMART_CONFIG = 0x07, and RSP_SMART_INFO = 0x85.
+PASS - CMD_SET_SMART_CONFIG has exactly the two-byte mode:u8,
+       sensitivity:u8 payload; RSP_SMART_INFO has exactly 12 bytes in the
+       documented field order.
+PASS - The legacy 65-byte INFO response and existing log record layout remain
+       compatible with earlier clients.
+PASS - Metadata version 2 consumes two reserved bytes for wakeMode and
+       smartSensitivity; version-1 migration defaults to Interval/Balanced and
+       preserves owner identity and interval.
+PASS - Owner reset clears ownership only and preserves route history, interval,
+       wake mode, and Smart sensitivity. Clear-log preserves wake settings.
+PASS - Smart source contract covers MPU candidate interrupt, 20 Hz / 5-second
+       dynamic-acceleration verification, fresh UTC location acquisition, and
+       cooldown/reconfirmation behavior.
+PASS - GPS status distinguishes physical supply, receiver activity, UART/parser
+       activity, and timed standby; no physical-GPS-power-off capability is
+       claimed for the assembled wiring.
+
+NOT PERFORMED / PENDING HARDWARE VALIDATION
+
+PENDING - Inspect the physical assembly: 1000 mAh 1S LiPo to XIAO BAT/GND;
+          MPU VCC/GND to 3V3/GND, SDA D4, SCL D5, INT D2, address 0x68; GPS
+          VCC/GND to 3V3/GND, TX to D7, RX from D6; D1 unused.
+PENDING - On the real MPU6050, verify WHO_AM_I, I²C address, critical register
+          read-back, data-ready configuration, and the D2 interrupt.
+PENDING - On the real GPS, verify 3.3 V operation, 9600-baud UART wiring,
+          NMEA reception, valid RMC/GGA navigation, and fresh UTC fixes.
+PENDING - Runtime CAS12 capability check: after normal NMEA, complete two
+          controlled standby cycles, observing NMEA silence, resumption, fresh
+          RMC/GGA, and subsequent valid navigation for each. Mark the capability
+          unavailable if either cycle fails; do not continuously retry it.
+PENDING - Measure receiver and whole-device current in Interval and Smart
+          states, including BLE connected/disconnected and any timed-standby
+          slice. Do not infer battery runtime from nominal capacity.
+PENDING - Compare 30, 60, and 120-second standby slices for current and resume
+          latency. Thirty seconds is a workaround candidate, not a measured
+          optimum.
+PENDING - Calibrate Smart sensitivity with an extended stationary run and
+          representative walking, city, and smooth-driving runs. The 80/160/300
+          mg preset values are starting values only.
+
+BUILD/TOOLING STATUS
+
+PASS - Firmware target compilation completed with Arduino CLI 1.5.1, the
+       non-mbed Seeed nRF52 Boards core 1.1.13, FQBN
+       Seeeduino:nrf52:xiaonRF52840, TinyGPSPlus 1.0.3, and Adafruit SPIFlash
+       5.1.1. Result: 169880 bytes (20%) program storage and 19376 bytes (8%)
+       dynamic memory. The temporary toolchain was outside this repository.
+PENDING - Android unit-test/APK execution was attempted with Gradle and a
+          temporary JDK 17, but stopped before compilation because the Android
+          SDK path is unavailable. Protocol tests are present in app/src/test
+          and still require an Android SDK-equipped environment to execute.
+PENDING - The requested fake-clock firmware state-machine suite and end-to-end
+          old-app/new-firmware compatibility tests still require a dedicated
+          host-test harness or execution against instrumented hardware.
+
+Until the pending checks are performed on the physical assembly, this release
+must not claim measured power savings, battery duration, CAS12 support, or final
+motion-threshold calibration.

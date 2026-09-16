@@ -49,18 +49,128 @@ data class DeviceInfo(
         get() = "$firmwareMajor.$firmwareMinor.$firmwarePatch"
 }
 
+/**
+ * The wake scheduler selected by the device.  The numeric values are part of
+ * the BLE protocol and must not be changed without a protocol revision.
+ */
+enum class WakeMode(val wireValue: Int, val label: String) {
+    INTERVAL(0, "Interval"),
+    SMART(1, "Smart motion"),
+    UNKNOWN(-1, "Unknown");
+
+    companion object {
+        fun fromWire(value: Int): WakeMode = values().firstOrNull { it.wireValue == value } ?: UNKNOWN
+    }
+}
+
+/** Motion trigger sensitivity presets, ordered from most to least sensitive. */
+enum class SmartSensitivity(
+    val wireValue: Int,
+    val label: String,
+    val thresholdMilligrams: Int
+) {
+    HIGH(0, "High", 80),
+    BALANCED(1, "Balanced", 160),
+    LOW(2, "Low", 300),
+    UNKNOWN(-1, "Unknown", 0);
+
+    companion object {
+        fun fromWire(value: Int): SmartSensitivity =
+            values().firstOrNull { it.wireValue == value } ?: UNKNOWN
+    }
+}
+
+/** State reported by the Smart Motion scheduler. */
+enum class SmartMotionState(val wireValue: Int, val label: String) {
+    DISABLED(0, "Disabled"),
+    ARMED(1, "Armed"),
+    VERIFYING(2, "Confirming motion"),
+    ACQUIRING(3, "Waiting for GPS"),
+    TRACKING(4, "GPS receiver active"),
+    COOLDOWN(5, "Cooldown"),
+    UNKNOWN(-1, "Unknown");
+
+    companion object {
+        fun fromWire(value: Int): SmartMotionState =
+            values().firstOrNull { it.wireValue == value } ?: UNKNOWN
+    }
+}
+
+// Compatibility aliases keep the model discoverable to callers that use the
+// terminology from the protocol/specification rather than the UI wording.
+typealias SmartMode = WakeMode
+typealias Sensitivity = SmartSensitivity
+typealias MotionState = SmartMotionState
+
+data class SmartInfo(
+    val protocolVersion: Int,
+    val mode: WakeMode,
+    val sensitivity: SmartSensitivity,
+    val motionState: SmartMotionState,
+    val confirmationSeconds: Int,
+    val standbySliceSeconds: Int,
+    val fixCooldownSeconds: Int,
+    val cooldownRemainingSeconds: Int,
+    val flags: Int,
+    val lastWakeReason: Int
+) {
+    val modeValue: Int get() = mode.wireValue
+    val sensitivityValue: Int get() = sensitivity.wireValue
+    val motionStateValue: Int get() = motionState.wireValue
+    val modeCode: Int get() = modeValue
+    val sensitivityCode: Int get() = sensitivityValue
+    val motionStateCode: Int get() = motionStateValue
+
+    val wakeMode: WakeMode get() = mode
+    val smartSensitivity: SmartSensitivity get() = sensitivity
+
+    val mpuPresent: Boolean get() = (flags and Protocol.SMART_FLAG_MPU_PRESENT) != 0
+    val mpuInterruptArmed: Boolean get() = (flags and Protocol.SMART_FLAG_MPU_INTERRUPT_ARMED) != 0
+    val cas12Verified: Boolean get() = (flags and Protocol.SMART_FLAG_CAS12_VERIFIED) != 0
+    val cas12Active: Boolean get() = (flags and Protocol.SMART_FLAG_CAS12_ACTIVE) != 0
+    val runtimeIntervalFallback: Boolean
+        get() = (flags and Protocol.SMART_FLAG_RUNTIME_INTERVAL_FALLBACK) != 0
+    val gpsReceiverActive: Boolean get() = (flags and Protocol.SMART_FLAG_GPS_RECEIVER_ACTIVE) != 0
+
+    val mpuFault: Boolean get() = !mpuPresent || !mpuInterruptArmed
+    val standbyUnavailable: Boolean get() = !cas12Verified
+    val standbyActive: Boolean get() = cas12Active
+    val runtimeFallback: Boolean get() = runtimeIntervalFallback
+    val receiverActive: Boolean get() = gpsReceiverActive
+}
+
 object Protocol {
     const val CMD_INFO_REQ = 0x01
     const val CMD_DOWNLOAD_REQ = 0x02
     const val CMD_CLEAR_LOG_REQ = 0x03
     const val CMD_PING = 0x04
     const val CMD_SET_INTERVAL = 0x05
+    const val CMD_GET_SMART_INFO = 0x06
+    const val CMD_SET_SMART_CONFIG = 0x07
 
     const val RSP_INFO = 0x81
     const val RSP_DATA_BATCH = 0x82
     const val RSP_DOWNLOAD_DONE = 0x83
     const val RSP_ACK = 0x84
+    const val RSP_SMART_INFO = 0x85
     const val RSP_ERROR = 0xFF
+
+    // SmartInfo.flags bits.  There is intentionally no GPS power-off bit:
+    // Smart Motion reports receiver/standby state, not a physical GPS gate.
+    const val SMART_FLAG_MPU_PRESENT = 1 shl 0
+    const val SMART_FLAG_MPU_INTERRUPT_ARMED = 1 shl 1
+    const val SMART_FLAG_CAS12_VERIFIED = 1 shl 2
+    const val SMART_FLAG_CAS12_ACTIVE = 1 shl 3
+    const val SMART_FLAG_RUNTIME_INTERVAL_FALLBACK = 1 shl 4
+    const val SMART_FLAG_GPS_RECEIVER_ACTIVE = 1 shl 5
+
+    // Alternate long-form names are useful for protocol-focused callers.
+    const val SMART_INFO_FLAG_MPU_PRESENT = SMART_FLAG_MPU_PRESENT
+    const val SMART_INFO_FLAG_MPU_INTERRUPT_ARMED = SMART_FLAG_MPU_INTERRUPT_ARMED
+    const val SMART_INFO_FLAG_CAS12_VERIFIED = SMART_FLAG_CAS12_VERIFIED
+    const val SMART_INFO_FLAG_CAS12_ACTIVE = SMART_FLAG_CAS12_ACTIVE
+    const val SMART_INFO_FLAG_RUNTIME_INTERVAL_FALLBACK = SMART_FLAG_RUNTIME_INTERVAL_FALLBACK
+    const val SMART_INFO_FLAG_GPS_RECEIVER_ACTIVE = SMART_FLAG_GPS_RECEIVER_ACTIVE
 
     private const val MAGIC1 = 0xA5
     private const val MAGIC2 = 0x5A
@@ -75,6 +185,25 @@ object Protocol {
             .putInt(seconds)
             .array()
         return encode(CMD_SET_INTERVAL, payload)
+    }
+
+    fun smartInfoRequest(): ByteArray = encode(CMD_GET_SMART_INFO)
+
+    // Descriptive alias for callers that use the command name directly.
+    fun getSmartInfoRequest(): ByteArray = smartInfoRequest()
+
+    fun setSmartConfigRequest(mode: WakeMode, sensitivity: SmartSensitivity): ByteArray =
+        setSmartConfigRequest(mode.wireValue, sensitivity.wireValue)
+
+    fun setSmartConfigRequest(mode: Int, sensitivity: Int): ByteArray {
+        require(mode == WakeMode.INTERVAL.wireValue || mode == WakeMode.SMART.wireValue) {
+            "Unsupported wake mode: $mode"
+        }
+        require(sensitivity in 0..2) { "Unsupported Smart Motion sensitivity: $sensitivity" }
+        return encode(
+            CMD_SET_SMART_CONFIG,
+            byteArrayOf(mode.toByte(), sensitivity.toByte())
+        )
     }
 
     fun downloadRequest(afterSeq: Long): ByteArray {
@@ -193,6 +322,36 @@ object Protocol {
             firmwareMajor = firmwareMajor,
             firmwareMinor = firmwareMinor,
             firmwarePatch = firmwarePatch
+        )
+    }
+
+    /** Parse the exact 12-byte little-endian RSP_SMART_INFO payload. */
+    fun parseSmartInfo(payload: ByteArray): SmartInfo? {
+        if (payload.size != 12) return null
+
+        val b = ByteBuffer.wrap(payload).order(ByteOrder.LITTLE_ENDIAN)
+        val protocolVersion = b.get().toInt() and 0xFF
+        val mode = WakeMode.fromWire(b.get().toInt() and 0xFF)
+        val sensitivity = SmartSensitivity.fromWire(b.get().toInt() and 0xFF)
+        val motionState = SmartMotionState.fromWire(b.get().toInt() and 0xFF)
+        val confirmationSeconds = b.get().toInt() and 0xFF
+        val standbySliceSeconds = b.get().toInt() and 0xFF
+        val fixCooldownSeconds = b.short.toInt() and 0xFFFF
+        val cooldownRemainingSeconds = b.short.toInt() and 0xFFFF
+        val flags = b.get().toInt() and 0xFF
+        val lastWakeReason = b.get().toInt() and 0xFF
+
+        return SmartInfo(
+            protocolVersion = protocolVersion,
+            mode = mode,
+            sensitivity = sensitivity,
+            motionState = motionState,
+            confirmationSeconds = confirmationSeconds,
+            standbySliceSeconds = standbySliceSeconds,
+            fixCooldownSeconds = fixCooldownSeconds,
+            cooldownRemainingSeconds = cooldownRemainingSeconds,
+            flags = flags,
+            lastWakeReason = lastWakeReason
         )
     }
 

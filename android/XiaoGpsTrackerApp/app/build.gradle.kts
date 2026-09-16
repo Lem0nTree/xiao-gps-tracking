@@ -11,8 +11,8 @@ android {
         applicationId = "com.example.xiaogpstracker"
         minSdk = 26
         targetSdk = 36
-        versionCode = 16
-        versionName = "1.5.1"
+        versionCode = 20
+        versionName = "2.0.0"
     }
 
     buildFeatures {
@@ -36,4 +36,5 @@ dependencies {
     implementation("androidx.core:core-ktx:1.17.0")
     implementation("androidx.appcompat:appcompat:1.7.1")
     implementation("org.maplibre.gl:android-sdk:11.8.0")
+    testImplementation("junit:junit:4.13.2")
 }

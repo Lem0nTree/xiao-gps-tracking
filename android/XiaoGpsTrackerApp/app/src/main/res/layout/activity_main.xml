@@ -150,6 +150,74 @@
                 android:enabled="false"
                 android:text="30 min" />
         </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="9dp"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:orientation="vertical">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="WAKE MODE"
+                    android:textColor="@color/text_tertiary"
+                    android:textSize="10sp"
+                    android:textStyle="bold" />
+
+                <Button
+                    android:id="@+id/wakeModeButton"
+                    style="@style/Widget.Xiao.SecondaryButton"
+                    android:layout_width="match_parent"
+                    android:layout_height="36dp"
+                    android:layout_marginTop="2dp"
+                    android:enabled="false"
+                    android:text="Connect" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="10dp"
+                android:layout_weight="1"
+                android:orientation="vertical">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="MOTION SENSITIVITY"
+                    android:textColor="@color/text_tertiary"
+                    android:textSize="10sp"
+                    android:textStyle="bold" />
+
+                <Button
+                    android:id="@+id/sensitivityButton"
+                    style="@style/Widget.Xiao.SecondaryButton"
+                    android:layout_width="match_parent"
+                    android:layout_height="36dp"
+                    android:layout_marginTop="2dp"
+                    android:enabled="false"
+                    android:text="Unavailable" />
+            </LinearLayout>
+        </LinearLayout>
+
+        <TextView
+            android:id="@+id/smartDetailsText"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="7dp"
+            android:ellipsize="end"
+            android:maxLines="4"
+            android:text="Connect to view Smart Motion status"
+            android:textColor="@color/text_tertiary"
+            android:textSize="10sp" />
     </LinearLayout>
 
     <ProgressBar

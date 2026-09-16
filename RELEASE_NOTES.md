@@ -1,73 +1,92 @@
-# Release 1.5.0
+# Release 2.0.0 — Smart Motion
+
+Smart Motion v2.0 adds motion-triggered logging while retaining the existing
+offline GPS log, bonded BLE ownership, synchronization, exports, and Interval
+mode.
 
 ## Firmware
 
-- Firmware version `1.5.0`.
-- Default GPS interval changed to 30 minutes.
-- Added persisted phone-configurable GPS intervals:
-  - 1 min
-  - 15 min
-  - 30 min
-  - 1 h
-  - 2 h
-  - 3 h
-- Added BLE command `CMD_SET_INTERVAL (0x05)` with a 32-bit seconds payload.
-- Added validation so unsupported intervals are rejected.
-- Added metadata format v1.5 combining:
-  - owner phone identity
-  - GPS interval
-- Added automatic migration from the firmware-1.0 owner metadata record.
-- Owner reset preserves the configured interval.
-- For the 1-minute profile, GPS stays powered after first fix to avoid repeated cold starts.
-- For intervals >=15 minutes, GPS is power-gated and wakes 60 seconds before the next due timestamp.
-- Receiver stays powered once a pre-wake fix is obtained so it can keep satellite lock until the due timestamp.
-- Acquisition timeout is 120 seconds, followed by a 60-second retry rest.
-- Slow BLE advertising remains available continuously; connected BLE is not required for logging.
-- Existing QSPI deep-power-down, 0 dBm BLE TX, USB-only debug logging, LED-off profile, 50 mA LiPo charge setting, bonded owner security, and circular logging are retained.
+- Firmware version `2.0.0`.
+- Added persisted wake modes: `Interval (0)` and `Smart (1)`.
+- Interval mode retains the six existing schedules: 60, 900, 1800, 3600,
+  7200, and 10800 seconds.
+- Smart mode preserves the saved interval but ignores its scheduler while
+  selected. MPU6050 motion verification starts GPS acquisition; a fresh valid
+  location and UTC are required before a point is stored.
+- Smart defaults to Balanced sensitivity. High, Balanced, and Low starting
+  thresholds are 80, 160, and 300 mg respectively; these values still require
+  calibration on the assembled hardware.
+- A missing MPU, failed identity/configuration check, or failed interrupt
+  causes a runtime Interval fallback for that boot while preserving the saved
+  Smart selection.
+- Upgraded the 32-byte metadata record to version 2 by consuming two reserved
+  bytes for `wakeMode` and `smartSensitivity`. Version-1 metadata migrates with
+  owner and interval preserved and defaults new fields to Interval/Balanced.
+- Owner reset clears only ownership and preserves route history, interval, wake
+  mode, and Smart sensitivity. Clear-log also preserves wake settings.
+- Updated GPS state reporting to distinguish physical supply, receiver
+  activity, UART/parser activity, and receiver-side timed standby. The actual
+  build powers the GPS from XIAO `3V3` continuously and has no physical power
+  gate.
+- Added a guarded CASIC `$PCAS12` timed-standby capability probe. It is used only
+  after two complete standby/resumption checks with valid navigation data and
+  is an optimization, not a Smart-mode dependency.
 
 ## Android
 
-- App version `1.5.0`, versionCode 15.
-- Added GPS wake interval selector backed by firmware persistence.
-- Live Status card shows the selected interval and battery-impact description.
-- Bottom controls redesigned to:
-  - Connect
-  - Sync track
-  - More
-- GPX, CSV, and Clear History moved into a popup More menu.
-- More menu enables/disables actions based on local track availability and BLE connection state.
-- Added BLE idle auto-disconnect to reduce connected-radio time while keeping timeline/map usable offline.
-- Added public BLE disconnect handling with an OEM-stack fallback.
-- Fixed duplicate legacy CCCD descriptor write.
-- Existing dark mode, timeline navigation, MapLibre/OpenFreeMap map, bonded pairing, incremental downloads, exports, and system-bar inset handling are retained.
+- App version `2.0.0`, versionCode `20`.
+- Added Interval/Smart mode selection and Smart sensitivity controls.
+- Added Smart status/capability display, including runtime Interval fallback and
+  receiver standby status where reported by firmware.
+- Retained legacy interval configuration, incremental downloads, GPX/CSV
+  exports, bonded pairing, local maps, dark mode, and BLE idle disconnect.
+- Legacy apps remain able to bond, read the 65-byte INFO packet, synchronize and
+  clear logs, and set Interval schedules; they do not expose Smart controls.
 
 ## Protocol
 
-New owner-only command:
+The existing framed protocol and 65-byte INFO response remain compatible. The
+v2 extension adds:
 
 ```text
-CMD_SET_INTERVAL = 0x05
-payload = uint32 little-endian seconds
+CMD_GET_SMART_INFO   = 0x06   payload: empty
+CMD_SET_SMART_CONFIG = 0x07   payload: mode:u8, sensitivity:u8 (exactly 2 bytes;
+                                  sensitivity 0=High, 1=Balanced, 2=Low)
+RSP_SMART_INFO       = 0x85   payload: exactly 12 bytes
 ```
 
-Allowed seconds:
+The `RSP_SMART_INFO` payload fields are, in order:
 
 ```text
-60
-900
-1800
-3600
-7200
-10800
+protocolVersion:u8
+mode:u8
+sensitivity:u8
+motionState:u8
+confirmationSeconds:u8
+standbySliceSeconds:u8
+fixCooldownSeconds:u16 little-endian
+cooldownRemainingSeconds:u16 little-endian
+flags:u8
+lastWakeReason:u8
 ```
 
-INFO remains 65 bytes and now reports firmware version 1.5.0 plus the persisted interval.
+Defined flags are `MPU_PRESENT`, `MPU_INTERRUPT_ARMED`, `CAS12_VERIFIED`,
+`CAS12_ACTIVE`, `RUNTIME_INTERVAL_FALLBACK`, and `GPS_RECEIVER_ACTIVE`. There
+is no physical-GPS-power-off flag for the v2 assembly. `CMD_SET_INTERVAL (0x05)`
+continues to set the persisted interval and explicitly selects Interval mode.
+The normal ACK plus Smart Info read-back verifies Smart configuration
+persistence.
 
-## 1.5.1 interval-setting reliability patch
+## Validation and hardware status
 
-- Android now verifies that the connected XIAO firmware is 1.5+ before enabling interval changes.
-- Added a 3.5-second interval command timeout and read-back verification.
-- Android logs received protocol packet types under `XiaoGpsProtocol`.
-- Protocol errors now have explicit messages for unsupported command, flash save failure, and bad interval.
-- Firmware sends only one ACK for `CMD_SET_INTERVAL`; Android requests INFO afterward.
-- Firmware restores the previous runtime interval if QSPI metadata persistence fails.
+The documented assembly is a 1000 mAh 1S LiPo, XIAO nRF52840, GY-521/MPU6050
+(`3V3`, `D4` SDA, `D5` SCL, `D2` INT, address `0x68`), and GPS (`3V3`, TX to
+`D7`, RX from `D6`). D1 is unused. There is no boost converter, load switch,
+GPS ON/OFF connection, or physical GPS power gate.
+
+Software source and protocol checks are separate from field validation. MPU
+identity/configuration/interrupt, GPS UART and navigation, CAS12 two-cycle
+runtime verification, whole-device current, battery runtime, and Smart
+sensitivity calibration remain pending until measured on the physical
+assembly. This release makes no fabricated current, runtime, or calibration
+claim.
