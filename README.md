@@ -1,4 +1,4 @@
-# XIAO GPS Tracker Smart Motion v2.0
+# XIAO GPS Tracker Smart Motion v2.1
 
 **A compact, private, low-cost GPS tracker built from accessible maker hardware.**
 
@@ -37,14 +37,29 @@ Interval mode preserves the six saved schedules: 1, 15, or 30 minutes, or 1,
 interval scheduler while selected. A motion interrupt starts a short
 accelerometer verification; sustained dynamic acceleration then starts GPS
 acquisition, with a fresh valid location and UTC fix required before logging.
-After a fix, a cooldown prevents duplicate wakes. Continued movement can start
-another acquisition; when movement stops, the tracker returns to its armed
-state. Smart defaults to Balanced sensitivity. The detailed state machine,
-BLE packet layout, and migration rules are in the [firmware notes](firmware/README.md).
+Smart Motion now has two tracking profiles:
 
-The legacy interval command explicitly selects Interval mode, so older apps
-continue to configure scheduled logging. Smart controls require the v2 Android
-app and firmware.
+- **Continuous** (default): the existing behavior, with a 120-second cooldown
+  after a fix and another acquisition if movement continues.
+- **Point-to-point**: capture one point after confirmed movement starts, then
+  one after **10 minutes without accelerometer activity**. Any new acceleration
+  restarts the stop timer. No intermediate points are recorded. If movement
+  resumes while acquiring the arrival point, that attempt is cancelled and a
+  new ten-minute quiet period is required.
+
+Point-to-point allows up to **5 minutes per GPS attempt**, requiring fresh GPS
+position and UTC, at least **6 satellites**, and **HDOP ≤ 1.50**. These stricter
+criteria favor better fixes; actual accuracy depends on reception. A failed
+start attempt still waits for the stop; a failed arrival attempt rearms for the
+next journey. It does not repeatedly retry while stationary. Both profiles keep
+five-second motion confirmation and the saved sensitivity (Balanced by default).
+
+Select **Smart motion → Tracking profiles** in the Android app. Point-to-point
+requires app and firmware **2.1.0**. The updated app can still configure older
+firmware using Continuous; it explains when a firmware update is needed. Older
+apps retain log sync and Interval commands, but cannot read the new Smart status
+or select Point-to-point. The detailed state machine, BLE packet layout, and
+migration rules are in the [firmware notes](firmware/README.md).
 
 ## Actual v2 power and wiring model
 
@@ -102,10 +117,10 @@ change the owner without erasing the route history or saved wake settings.
 
 ## Android companion app
 
-The v2 Android app (`2.0.0`, versionCode `20`) shows tracker status, the
-Interval/Smart selector, Smart sensitivity, map, and time-based route timeline.
+The Android app (`2.1.0`, versionCode `21`) shows tracker status, the
+Interval/Smart selector, tracking profiles, map, and time-based route timeline.
 Choose the GPS mode first: Interval shows the logging interval controls, while
-Smart shows motion sensitivity and hides the interval controls. The saved
+Smart shows tracking profiles and hides the interval controls. The saved
 interval is preserved and shown again when returning to Interval mode.
 The dashboard separates tracker status, recording settings, and route history.
 Its content scrolls on smaller screens while Connect and Sync remain accessible

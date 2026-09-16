@@ -39,7 +39,7 @@ class ProtocolTest {
     }
 
     @Test
-    fun parsesExactLittleEndianSmartInfoPayload() {
+    fun parsesVersionedLittleEndianSmartInfoPayloads() {
         val payload = byteArrayOf(
             2, // protocol version
             1, // Smart mode
@@ -63,6 +63,8 @@ class ProtocolTest {
         assertEquals(WakeMode.SMART, info.mode)
         assertEquals(SmartSensitivity.BALANCED, info.sensitivity)
         assertEquals(SmartMotionState.COOLDOWN, info.motionState)
+        assertEquals(TrackingProfile.CONTINUOUS, info.profile)
+        assertEquals(false, info.supportsProfiles)
         assertEquals(5, info.confirmationSeconds)
         assertEquals(120, info.standbySliceSeconds)
         assertEquals(0x1234, info.fixCooldownSeconds)
@@ -71,9 +73,33 @@ class ProtocolTest {
         assertEquals(true, info.mpuPresent)
         assertEquals(true, info.cas12Active)
         assertEquals(true, info.gpsReceiverActive)
+        assertEquals(SmartWakeReason.UNKNOWN, info.wakeReason)
 
         assertNull(Protocol.parseSmartInfo(ByteArray(11)))
-        assertNull(Protocol.parseSmartInfo(ByteArray(13)))
+        assertNull(Protocol.parseSmartInfo(payload + byteArrayOf(TrackingProfile.POINT_TO_POINT.wireValue.toByte())))
+
+        val profilePayload = (payload + byteArrayOf(TrackingProfile.POINT_TO_POINT.wireValue.toByte())).also {
+            it[0] = Protocol.SMART_INFO_PROTOCOL_V3.toByte()
+        }
+        val profileInfo = Protocol.parseSmartInfo(profilePayload)
+        assertNotNull(profileInfo)
+        assertEquals(3, profileInfo!!.protocolVersion)
+        assertEquals(TrackingProfile.POINT_TO_POINT, profileInfo.profile)
+        assertEquals(true, profileInfo.supportsProfiles)
+        assertEquals(SmartMotionState.COOLDOWN, profileInfo.motionState)
+        assertNull(Protocol.parseSmartInfo(profilePayload.copyOf(12)))
+
+        val stopPayload = profilePayload.copyOf()
+        stopPayload[3] = SmartMotionState.ACQUIRING_STOP.wireValue.toByte()
+        stopPayload[11] = SmartWakeReason.STOP.wireValue.toByte()
+        val stopInfo = Protocol.parseSmartInfo(stopPayload)
+        assertNotNull(stopInfo)
+        assertEquals(SmartMotionState.ACQUIRING_STOP, stopInfo!!.motionState)
+        assertEquals(SmartWakeReason.STOP, stopInfo.wakeReason)
+
+        val unknownVersion = payload.copyOf()
+        unknownVersion[0] = 4
+        assertNull(Protocol.parseSmartInfo(unknownVersion))
     }
 
     @Test
@@ -84,6 +110,20 @@ class ProtocolTest {
         assertArrayEquals(
             byteArrayOf(WakeMode.SMART.wireValue.toByte(), SmartSensitivity.LOW.wireValue.toByte()),
             framePayload(Protocol.setSmartConfigRequest(WakeMode.SMART, SmartSensitivity.LOW))
+        )
+        assertArrayEquals(
+            byteArrayOf(
+                WakeMode.SMART.wireValue.toByte(),
+                SmartSensitivity.BALANCED.wireValue.toByte(),
+                TrackingProfile.POINT_TO_POINT.wireValue.toByte()
+            ),
+            framePayload(
+                Protocol.setSmartConfigRequest(
+                    WakeMode.SMART,
+                    SmartSensitivity.BALANCED,
+                    TrackingProfile.POINT_TO_POINT
+                )
+            )
         )
         assertArrayEquals(
             byteArrayOf(0x84.toByte(), 0x03, 0x00, 0x00),

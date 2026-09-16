@@ -1,8 +1,40 @@
-XIAO GPS Tracker Smart Motion v2.0 validation record
+XIAO GPS Tracker Smart Motion v2.1 validation record
 
 This record separates software/source checks from tests that require the
 assembled hardware. It contains no measured current, runtime, or calibration
 result.
+
+POINT-TO-POINT PROFILE (2026-09-16)
+
+PASS - Firmware 2.1.0 target build with Seeed nRF52 core 1.1.13,
+       Seeeduino:nrf52:xiaonRF52840: 172040 bytes program, 19380 bytes RAM.
+PASS - python3 firmware/tests/test_motion_runtime.py: actual scheduler/verifier
+       bodies pass Continuous regressions plus Point-to-point movement without
+       periodic GPS, exact 600-second stop, motion cancellation during arrival,
+       five-minute timeouts, quiet-clock rollover, and zero timestamp handling.
+PASS - python3 firmware/tests/test_tracking_profiles.py: actual persistence and
+       GPS-save bodies pass v1/v2 migration, profile reload, owner-reset
+       preservation, invalid configuration rejection, failed-save RAM rollback,
+       fresh quality filtering, one departure/arrival, deadline ordering, and
+       cancellation of a startup CAS12 probe before endpoint acquisition.
+       GCC/G++ tests use fake peripherals; C++ compiler unpacked under /tmp.
+PASS - Firmware review confirms 13-byte Smart Info v3, profile at byte 12,
+       legacy 2-byte setter selects Continuous, v3 3-byte setter validates
+       profile before saving. GPS record and INFO layouts remain unchanged.
+PASS - Android ProtocolTest and TrackerPresentationTest: all 11 JUnit tests
+       passed using Kotlin 2.3.0 compiler, JVM target 17, JDK 21, JUnit 4.13.2.
+       This standalone run compiled GpsRecord, Protocol, TrackerPresentation,
+       and both test classes; it does not compile the Activity or Android UI.
+PASS - Android resource XML parses; independent review checked profile dialog,
+       legacy-firmware gating, status presentation, and profile-aware readback.
+BLOCKED - Full Android Gradle unit-test/APK build: temporary JDK runs Gradle,
+          but task dependencies fail because the Android SDK is unavailable.
+PENDING - Physical departure/arrival tests, smooth travel vs no acceleration,
+          real GPS availability/accuracy, stop/resume near the 10-minute
+          boundary, power-cycle persistence, and phone-to-board BLE readback.
+
+Entries below record earlier releases/changes and their original test results.
+Where behavior changed, the Point-to-point entry above supersedes them.
 
 ANDROID LAUNCHER ICON REFRESH (2026-09-16)
 

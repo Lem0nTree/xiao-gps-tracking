@@ -91,6 +91,8 @@ to `VERIFYING`. Verification samples dynamic acceleration (gravity removed) at
 samples are active and no quiet gap exceeds 1 second. A rejected candidate
 returns to `ARMED` without a GPS acquisition.
 
+#### Continuous profile (default)
+
 An accepted candidate moves to `ACQUIRING`. Firmware requires a fresh valid
 location and UTC from the GPS within 90 seconds, then stores the point and
 enters a 120-second cooldown. Recent accelerometer activity and reliable GPS
@@ -98,6 +100,37 @@ speed/displacement determine whether movement continues. Continued movement
 can start another acquisition; when movement stops, the tracker returns to
 `ARMED`. A failed acquisition is retried after the cooldown only when movement
 is reconfirmed.
+
+#### Point-to-point profile
+
+After the same five-second acceleration confirmation, capture one departure
+point. Then enter `WAITING_FOR_STOP` with GPS parsing inactive. Every subsequent
+MPU motion event resets the stop timer; there is no two-minute capture in this
+profile. After exactly 600 seconds with no accelerometer activity, enter
+`ACQUIRING_STOP` and attempt one arrival point. GPS speed and drift do not reset
+the acceleration timer. A GPS fix also does not reset it.
+
+Each acquisition allows **300 seconds**, instead of Continuous's 90 seconds.
+It requires a fresh post-start location and UTC plus all of these conditions:
+
+- location, date, time, satellite count, and HDOP no older than 2 seconds;
+- at least 6 satellites;
+- HDOP greater than zero and no greater than 1.50.
+
+These limits favor higher-quality navigation but do not guarantee positional
+accuracy. A fix arriving at or after the acquisition deadline is not stored.
+A failed departure attempt still waits for arrival. A successful or timed-out
+arrival rearms for the next departure; no repeated stationary attempts occur.
+If acceleration resumes during arrival acquisition, cancel that acquisition
+before storing a point and wait for another complete ten-minute quiet period.
+Point-to-point does not use CAS12 cooldown slices and retires any in-flight
+startup probe before its departure acquisition.
+Booting or changing settings rearms the runtime; in-progress journeys are not
+persisted across reboot.
+
+The Android Smart Motion settings display **Tracking profiles** with
+**Continuous** and **Point-to-point**. Sensitivity remains an underlying saved
+calibration setting; the new app preserves it when changing profile.
 
 Smart sensitivity presets are starting calibration values, not measured final
 thresholds:
@@ -115,8 +148,8 @@ Interval behavior and reports `runtimeIntervalFallback`.
 
 ### Motion rearm diagnostic build
 
-The startup banner `FW diagnostic build: motion-rearm-1` identifies the
-post-v2.0 debugging patch. Serial output now includes saved mode, actual runtime
+The current startup banner is `FW diagnostic build: point-to-point-1`. The
+post-v2.0 motion-rearm diagnostics remain available. Serial output now includes saved mode, actual runtime
 mode, fallback, Smart state, the real Smart cooldown, D2 level, interrupt count,
 motion-event count, and verification sample counts/rejection reasons. An
 Interval `nextWake` countdown is printed only when Interval actually runs.
@@ -148,12 +181,14 @@ Run the focused host regression checks from the repository root:
 
 ```sh
 python3 firmware/tests/test_motion_runtime.py
+python3 firmware/tests/test_tracking_profiles.py
 ```
 
-These compile the actual C-compatible scheduler/verifier function bodies with
-GCC and fake peripherals/clock. They cover repeated cooldowns, motion after
+These compile actual scheduler/verifier and profile/GPS-save function bodies
+with GCC/G++ and fake peripherals/clock. They cover repeated cooldowns, motion after
 rearming, missed interrupt edges, jittered 20 Hz samples, quiet rejection,
-failure retry, rollover, and Interval scheduling. They do not validate the
+failure retry, rollover, Interval scheduling, Point-to-point stop timing and
+cancellation, quality gating, metadata migration, and settings rollback. They do not validate the
 physical MPU, GPS, BLE stack, or flash writes.
 
 ## GPS activity and CAS12 standby
@@ -193,17 +228,18 @@ The XIAO's 2 MiB QSPI flash contains a circular log with 104,244 records. Each
 - satellite count;
 - CRC-8.
 
-The 32-byte metadata record is version 2. It retains the owner identity and
-interval and consumes two previously reserved bytes for `wakeMode` and
-`smartSensitivity`. A version-1 record migrates in place conceptually while
-preserving owner and interval, defaulting the new fields to Interval and
-Balanced. The GPS records remain byte-for-byte compatible.
+The 32-byte metadata record is version 3. It retains the owner identity and
+interval and uses three previously reserved bytes for `wakeMode`,
+`smartSensitivity`, and `trackingProfile`. Version-1 metadata migrates to
+Interval/Balanced/Continuous while preserving owner and interval. Version-2
+metadata preserves mode and sensitivity and defaults to Continuous, regardless
+of the old reserved profile byte. GPS records remain byte-for-byte compatible.
 
 Owner reset (D0 held low during boot) clears only ownership. It preserves the
-route history, interval, wake mode, and Smart sensitivity. Clearing the route
-also preserves these settings; neither operation is a factory reset.
+route history, interval, wake mode, sensitivity, and tracking profile. Clearing
+the route also preserves these settings; neither operation is a factory reset.
 
-## BLE framing and v2 protocol
+## BLE framing and profile protocol v3
 
 Packets use the existing frame:
 
@@ -212,17 +248,22 @@ magic A5 5A | type:u8 | len:u16 little-endian | payload | CRC16-CCITT
 ```
 
 The CRC covers `type`, `len`, and `payload`. Existing command and response
-types remain available, including the 65-byte `INFO` response. The v2 extension
-adds:
+types remain available, including the 65-byte `INFO` response. Command IDs
+remain the same as v2:
 
 ```text
 CMD_GET_SMART_INFO   = 0x06   payload: empty
-CMD_SET_SMART_CONFIG = 0x07   payload: mode:u8, sensitivity:u8 (exactly 2 bytes)
-RSP_SMART_INFO       = 0x85   payload: exactly 12 bytes
+CMD_SET_SMART_CONFIG = 0x07   payload: mode:u8, sensitivity:u8, profile:u8
+RSP_SMART_INFO       = 0x85   payload: exactly 13 bytes, protocolVersion = 3
 ```
 
 `CMD_SET_SMART_CONFIG` returns the normal ACK and the client reads Smart Info
-back to verify persisted settings. The 12-byte `RSP_SMART_INFO` payload is:
+back to verify persisted settings. The v3 command requires three bytes;
+legacy two-byte commands remain accepted and explicitly select Continuous.
+Profile values are `0` Continuous and `1` Point-to-point. Invalid values or
+lengths are rejected before any settings change.
+
+The v3 `RSP_SMART_INFO` keeps the v2 field offsets and appends the profile:
 
 | Offset | Field | Encoding |
 | ---: | --- | --- |
@@ -232,10 +273,15 @@ back to verify persisted settings. The 12-byte `RSP_SMART_INFO` payload is:
 | 3 | `motionState` | `u8` state code |
 | 4 | `confirmationSeconds` | `u8` |
 | 5 | `standbySliceSeconds` | `u8` |
-| 6–7 | `fixCooldownSeconds` | `u16` little-endian |
+| 6–7 | `fixCooldownSeconds` | `u16` little-endian; 120 Continuous, 0 Point-to-point |
 | 8–9 | `cooldownRemainingSeconds` | `u16` little-endian |
 | 10 | `flags` | `u8` bit field |
-| 11 | `lastWakeReason` | `u8` |
+| 11 | `lastWakeReason` | `u8`; 0 none, 1 motion, 2 retry, 3 stop |
+| 12 | `trackingProfile` | `u8`; 0 Continuous, 1 Point-to-point |
+
+Motion state codes 0–5 retain their v2 meanings; 6 is `WAITING_FOR_STOP` and
+7 is `ACQUIRING_STOP`. The cooldown remaining field describes only a Continuous
+cooldown, not the Point-to-point quiet timer.
 
 The defined flag bits are:
 
@@ -254,7 +300,9 @@ boot or hardware configuration; it does not silently rewrite the user's mode.
 
 Older apps can still bond, read the legacy INFO packet, sync records, clear
 logs, and set the six interval values. They cannot configure or display Smart
-mode until upgraded to the v2 app.
+profiles or parse the v3 Smart Info until upgraded to app 2.1.0. The updated
+app also accepts the v2 12-byte Smart Info, uses legacy setters for that
+firmware, and offers Continuous only until firmware is upgraded.
 
 ## BLE behavior and security
 

@@ -50,7 +50,7 @@
 // ---------------- User settings ----------------
 
 static const char BLE_DEVICE_NAME[] = "XIAO-GPS";
-static const char FW_VERSION[] = "2.0.0";
+static const char FW_VERSION[] = "2.1.0";
 static const char BLE_PAIRING_PIN[] = "482731"; // CHANGE THIS, exactly 6 digits
 static const uint32_t DEFAULT_LOG_INTERVAL_SECONDS = 1800; // 30 min
 static const uint32_t GPS_BAUD = 9600;
@@ -128,6 +128,15 @@ static const uint32_t SMART_QUIET_GAP_MS = 2000;
 static const uint32_t SMART_MOTION_RECENCY_MS = 1500;
 static const uint32_t SMART_ACQUISITION_TIMEOUT_MS = 90000;
 static const uint32_t SMART_COOLDOWN_MS = 120000;
+// Point-to-point records departure and arrival only. Quality limits are
+// acquisition criteria, not a guarantee of measured positional accuracy.
+static const uint8_t SMART_PROFILE_CONTINUOUS = 0;
+static const uint8_t SMART_PROFILE_POINT_TO_POINT = 1;
+static const uint32_t SMART_POINT_STOP_MS = 600000;
+static const uint32_t SMART_POINT_ACQUISITION_TIMEOUT_MS = 300000;
+static const uint8_t SMART_POINT_MIN_SATELLITES = 6;
+static const uint16_t SMART_POINT_MAX_HDOP_X100 = 150;
+static const uint32_t SMART_POINT_FIX_STALE_MS = 2000;
 // Keep the UART/parser open for the final 10 seconds of every Smart cooldown.
 // This observation window is deliberately short so it does not turn cooldown
 // into a full-time receiver session, but is long enough for fresh 1 Hz RMC/GGA
@@ -240,15 +249,17 @@ static const uint32_t METADATA_SECTOR = 0;
 static const uint32_t LOG_SECTOR_FIRST = 1;
 static const uint32_t LOG_SECTOR_COUNT = SECTOR_COUNT - LOG_SECTOR_FIRST;
 
-// v1.0 legacy owner record magic and combined metadata magic.  Metadata v2
-// consumes only the first two bytes that v1.5 left reserved, so owner,
+// v1.0 legacy owner record magic and combined metadata magic. Metadata v3
+// consumes three bytes that v1.5 left reserved, so owner,
 // interval, and the 20-byte log records remain byte-for-byte compatible.
 static const uint32_t LEGACY_OWNER_MAGIC = 0x314E574FUL; // "OWN1"
 static const uint32_t METADATA_MAGIC = 0x354B5254UL;     // "TRK5"
 static const uint8_t METADATA_VERSION_V1 = 1;
 static const uint8_t METADATA_VERSION_V2 = 2;
+static const uint8_t METADATA_VERSION_V3 = 3;
 static const uint8_t METADATA_RESERVED_MODE = 0;
 static const uint8_t METADATA_RESERVED_SENSITIVITY = 1;
+static const uint8_t METADATA_RESERVED_PROFILE = 2;
 
 #pragma pack(push, 1)
 struct LegacyOwnerRecord {
@@ -297,7 +308,9 @@ enum SmartState : uint8_t {
   SMART_VERIFYING = 2,
   SMART_ACQUIRING = 3,
   SMART_TRACKING = 4,
-  SMART_COOLDOWN = 5
+  SMART_COOLDOWN = 5,
+  SMART_WAITING_FOR_STOP = 6,
+  SMART_ACQUIRING_STOP = 7
 };
 
 enum Cas12State : uint8_t {
@@ -310,7 +323,8 @@ enum Cas12State : uint8_t {
 enum SmartWakeReason : uint8_t {
   SMART_WAKE_NONE = 0,
   SMART_WAKE_MOTION = 1,
-  SMART_WAKE_RETRY = 2
+  SMART_WAKE_RETRY = 2,
+  SMART_WAKE_STOP = 3
 };
 
 static const uint32_t RECORD_SIZE = sizeof(GpsRecord);
@@ -329,6 +343,7 @@ static TrackingMode trackingMode = TRACKING_INTERVAL;
 // intentionally bounded so an all-0xFF/corrupt record cannot select an
 // undocumented classifier profile.
 static uint8_t smartSensitivity = SMART_DEFAULT_SENSITIVITY;
+static uint8_t smartTrackingProfile = SMART_PROFILE_CONTINUOUS;
 // A Smart selection remains persisted when the motion hardware is unavailable,
 // but this boot deliberately runs the proven Interval scheduler.  Keeping the
 // fallback separate from trackingMode lets INFO/0x85 report the saved mode
@@ -478,7 +493,7 @@ static const uint8_t SMART_INFO_FLAG_CAS12_VERIFIED = 0x04;
 static const uint8_t SMART_INFO_FLAG_CAS12_ACTIVE = 0x08;
 static const uint8_t SMART_INFO_FLAG_RUNTIME_INTERVAL_FALLBACK = 0x10;
 static const uint8_t SMART_INFO_FLAG_GPS_RECEIVER_ACTIVE = 0x20;
-static const uint8_t SMART_INFO_PROTOCOL_VERSION = 2;
+static const uint8_t SMART_INFO_PROTOCOL_VERSION = 3;
 
 // Existing INFO byte 55 keeps its v1.0 meanings in bits 0..3.  Bits 4..7 are
 // additive v2 capability/runtime flags and do not change its 65-byte layout.
@@ -559,12 +574,27 @@ const char* smartStateLabel(SmartState state) {
     case SMART_ACQUIRING: return "ACQUIRING";
     case SMART_TRACKING: return "TRACKING";
     case SMART_COOLDOWN: return "COOLDOWN";
+    case SMART_WAITING_FOR_STOP: return "WAITING_FOR_STOP";
+    case SMART_ACQUIRING_STOP: return "ACQUIRING_STOP";
     default: return "DISABLED";
   }
 }
 
 bool smartRuntimeActive() {
   return trackingMode == TRACKING_SMART && !runtimeIntervalFallback;
+}
+
+bool smartPointToPoint() {
+  return smartTrackingProfile == SMART_PROFILE_POINT_TO_POINT;
+}
+
+bool smartAcquisitionActive() {
+  return smartState == SMART_ACQUIRING || smartState == SMART_ACQUIRING_STOP;
+}
+
+uint32_t smartAcquisitionTimeoutMs() {
+  return smartPointToPoint() ? SMART_POINT_ACQUISITION_TIMEOUT_MS
+                           : SMART_ACQUISITION_TIMEOUT_MS;
 }
 
 uint16_t smartSensitivityThresholdMg() {
@@ -735,7 +765,7 @@ void serviceGpsPowerState() {
     // Smart's logical GPS runtime is controlled by its explicit state
     // machine.  The startup exception leaves UART open long enough to observe
     // NMEA and perform the one-boot optional CAS12 probe.
-    if (smartStartupProbePending || smartState == SMART_ACQUIRING ||
+    if (smartStartupProbePending || smartAcquisitionActive() ||
         smartState == SMART_TRACKING) {
       if (!gpsPowered && !gpsStandby) gpsPowerOn();
     } else if (smartState == SMART_COOLDOWN) {
@@ -759,6 +789,7 @@ void serviceGpsPowerState() {
         if (!gpsPowered && !gpsStandby) gpsPowerOn();
       }
     } else if (smartState == SMART_ARMED ||
+               smartState == SMART_WAITING_FOR_STOP ||
                smartState == SMART_VERIFYING) {
       if (gpsPowered && !gpsStandby && !gpsStandbyPending &&
           cas12State != CAS12_PROBING) {
@@ -1265,11 +1296,16 @@ bool legacyOwnerRecordValid(const LegacyOwnerRecord& record) {
 bool metadataRecordValid(const MetadataRecord& record) {
   if (record.magic != METADATA_MAGIC ||
       (record.version != METADATA_VERSION_V1 &&
-       record.version != METADATA_VERSION_V2)) return false;
+       record.version != METADATA_VERSION_V2 &&
+       record.version != METADATA_VERSION_V3)) return false;
   if (!isAllowedLogInterval(record.logIntervalSeconds)) return false;
-  if (record.version == METADATA_VERSION_V2 &&
+  if (record.version >= METADATA_VERSION_V2 &&
       (record.reserved[METADATA_RESERVED_MODE] > TRACKING_SMART ||
        record.reserved[METADATA_RESERVED_SENSITIVITY] > SMART_MAX_SENSITIVITY)) {
+    return false;
+  }
+  if (record.version == METADATA_VERSION_V3 &&
+      record.reserved[METADATA_RESERVED_PROFILE] > SMART_PROFILE_POINT_TO_POINT) {
     return false;
   }
   const uint8_t expected =
@@ -1280,7 +1316,7 @@ bool metadataRecordValid(const MetadataRecord& record) {
 void initDefaultMetadata() {
   memset(&metadataRecord, 0, sizeof(metadataRecord));
   metadataRecord.magic = METADATA_MAGIC;
-  metadataRecord.version = METADATA_VERSION_V2;
+  metadataRecord.version = METADATA_VERSION_V3;
   metadataRecord.ownerSet = 0;
   metadataRecord.logIntervalSeconds = DEFAULT_LOG_INTERVAL_SECONDS;
   metadataRecord.reserved[METADATA_RESERVED_MODE] = TRACKING_INTERVAL;
@@ -1292,17 +1328,19 @@ void initDefaultMetadata() {
   logIntervalSeconds = DEFAULT_LOG_INTERVAL_SECONDS;
   trackingMode = TRACKING_INTERVAL;
   smartSensitivity = SMART_DEFAULT_SENSITIVITY;
+  smartTrackingProfile = SMART_PROFILE_CONTINUOUS;
 }
 
 bool persistMetadata() {
   flashWake();
 
   metadataRecord.magic = METADATA_MAGIC;
-  metadataRecord.version = METADATA_VERSION_V2;
+  metadataRecord.version = METADATA_VERSION_V3;
   metadataRecord.ownerSet = ownerSet ? 1 : 0;
   metadataRecord.logIntervalSeconds = logIntervalSeconds;
   metadataRecord.reserved[METADATA_RESERVED_MODE] = (uint8_t)trackingMode;
   metadataRecord.reserved[METADATA_RESERVED_SENSITIVITY] = smartSensitivity;
+  metadataRecord.reserved[METADATA_RESERVED_PROFILE] = smartTrackingProfile;
   metadataRecord.crc8 =
       crc8(reinterpret_cast<const uint8_t*>(&metadataRecord),
            sizeof(MetadataRecord) - 1);
@@ -1342,13 +1380,14 @@ bool loadOwnerLock() {
 
     if (current.version == METADATA_VERSION_V1) {
       // v1.5 had no mode field.  Its behavior was Interval, so migrate that
-      // behavior while consuming only the first two reserved bytes for v2.
+      // behavior while initializing the three reserved settings bytes for v3.
       trackingMode = TRACKING_INTERVAL;
       metadataRecord.reserved[METADATA_RESERVED_MODE] = TRACKING_INTERVAL;
       metadataRecord.reserved[METADATA_RESERVED_SENSITIVITY] =
           SMART_DEFAULT_SENSITIVITY;
       smartSensitivity = SMART_DEFAULT_SENSITIVITY;
-      DBG_PRINTLN("Migrating v1 metadata to v2 (Interval mode preserved).");
+      smartTrackingProfile = SMART_PROFILE_CONTINUOUS;
+      DBG_PRINTLN("Migrating v1 metadata to v3 (Interval mode preserved).");
       flashSleep();
       return persistMetadata();
     }
@@ -1356,7 +1395,10 @@ bool loadOwnerLock() {
     trackingMode = current.reserved[METADATA_RESERVED_MODE] == TRACKING_SMART
         ? TRACKING_SMART : TRACKING_INTERVAL;
     smartSensitivity = current.reserved[METADATA_RESERVED_SENSITIVITY];
+    smartTrackingProfile = current.version == METADATA_VERSION_V3
+        ? current.reserved[METADATA_RESERVED_PROFILE] : SMART_PROFILE_CONTINUOUS;
     flashSleep();
+    if (current.version == METADATA_VERSION_V2) return persistMetadata();
     return true;
   }
 
@@ -1372,7 +1414,7 @@ bool loadOwnerLock() {
     metadataRecord.ownerSet = 1;
     metadataRecord.addrType = legacy.addrType;
     memcpy(metadataRecord.addr, legacy.addr, sizeof(metadataRecord.addr));
-    DBG_PRINTLN("Migrating v1.0 owner metadata to v2.");
+    DBG_PRINTLN("Migrating v1.0 owner metadata to v3.");
   }
 
   flashSleep();
@@ -1481,7 +1523,8 @@ void applyTrackingRuntime() {
   gpsNextWakeMs = 0; // Retire the old Interval deadline; Smart owns its timers.
   smartState = SMART_ARMED;
   smartStateSinceMs = now;
-  smartStartupProbePending = !cas12ProbeAttempted && cas12State == CAS12_UNKNOWN;
+  smartStartupProbePending = !smartPointToPoint() &&
+      !cas12ProbeAttempted && cas12State == CAS12_UNKNOWN;
   cas12StartupSinceMs = smartStartupProbePending ? now : 0;
   if (gpsStandby || gpsStandbyPending) {
     // A runtime reset (including a sensitivity-only update) invalidates any
@@ -1493,27 +1536,27 @@ void applyTrackingRuntime() {
   }
 }
 
-bool setSmartConfig(TrackingMode requestedMode, uint8_t requestedSensitivity) {
+bool setSmartConfig(TrackingMode requestedMode, uint8_t requestedSensitivity, uint8_t requestedProfile) {
   if (requestedMode != TRACKING_INTERVAL && requestedMode != TRACKING_SMART) {
     return false;
   }
-  if (requestedSensitivity > SMART_MAX_SENSITIVITY) return false;
+  if (requestedSensitivity > SMART_MAX_SENSITIVITY ||
+      requestedProfile > SMART_PROFILE_POINT_TO_POINT) return false;
 
-  // The mode and sensitivity are one v2 configuration transaction.  Do not
-  // persist one field and then discover that the other field was invalid.
+  // Save the complete configuration atomically from the caller's perspective.
   const TrackingMode previousMode = trackingMode;
   const uint8_t previousSensitivity = smartSensitivity;
-  const uint8_t previousModeByte = metadataRecord.reserved[METADATA_RESERVED_MODE];
-  const uint8_t previousSensitivityByte =
-      metadataRecord.reserved[METADATA_RESERVED_SENSITIVITY];
+  const uint8_t previousProfile = smartTrackingProfile;
+  const MetadataRecord previousMetadata = metadataRecord;
 
   trackingMode = requestedMode;
   smartSensitivity = requestedSensitivity;
+  smartTrackingProfile = requestedProfile;
   if (!persistMetadata()) {
     trackingMode = previousMode;
     smartSensitivity = previousSensitivity;
-    metadataRecord.reserved[METADATA_RESERVED_MODE] = previousModeByte;
-    metadataRecord.reserved[METADATA_RESERVED_SENSITIVITY] = previousSensitivityByte;
+    smartTrackingProfile = previousProfile;
+    metadataRecord = previousMetadata;
     DBG_PRINTLN("Smart configuration save FAILED; previous values restored in RAM.");
     return false;
   }
@@ -1532,9 +1575,9 @@ bool setSmartConfig(TrackingMode requestedMode, uint8_t requestedSensitivity) {
 }
 
 // Kept for internal/source compatibility with the v1 mode abstraction.  The
-// wire-level v2 setter always calls setSmartConfig() with both bytes.
+// wire-level setter supplies all three settings (legacy commands default the profile).
 bool setTrackingMode(TrackingMode requestedMode) {
-  return setSmartConfig(requestedMode, smartSensitivity);
+  return setSmartConfig(requestedMode, smartSensitivity, smartTrackingProfile);
 }
 
 bool setLogInterval(uint32_t seconds) {
@@ -1547,7 +1590,7 @@ bool setLogInterval(uint32_t seconds) {
   logIntervalSeconds = seconds;
   metadataRecord.logIntervalSeconds = seconds;
   // The legacy interval command is also the explicit way back to Interval
-  // mode.  Persist both values atomically in the v2 metadata record.
+  // mode. Persist both values in the v3 metadata record.
   trackingMode = TRACKING_INTERVAL;
 
   if (!persistMetadata()) {
@@ -1852,6 +1895,13 @@ void setSmartState(SmartState nextState) {
 void startSmartAcquisition() {
   if (!smartRuntimeActive()) return;
 
+  if (smartPointToPoint()) {
+    // This profile has no receiver-standby cooldown. Retire any startup probe
+    // so its asynchronous resume logic cannot reopen GPS between endpoints.
+    if (cas12State == CAS12_PROBING) finishCas12Probe(false);
+    smartStartupProbePending = false;
+    cas12ProbeAttempted = true;
+  }
   const bool retryWake = smartRetryAfterCooldown;
   smartRetryAfterCooldown = false;
   smartFirstFixPending = true;
@@ -1868,7 +1918,36 @@ void startSmartAcquisition() {
   smartAcquisitionFixSentenceBaseline = gps.sentencesWithFix();
   smartAcquisitionLocationBaseline = gpsLocationUpdateCounter;
   smartAcquisitionUtcBaseline = gpsUtcUpdateCounter;
-  DBG_PRINTLN("Smart motion verified; GNSS acquisition started (90 s window).");
+  DBG_PRINTF("Smart GNSS acquisition started (%lus window).\n",
+             (unsigned long)(smartAcquisitionTimeoutMs() / 1000UL));
+}
+
+// Called after either a stored endpoint or a bounded failed attempt. A failed
+// departure still waits for arrival; a failed arrival rearms without repeatedly
+// logging/attempting points while stationary.
+void finishSmartPointAcquisition() {
+  const bool arrival = smartState == SMART_ACQUIRING_STOP;
+  smartFirstFixPending = false;
+  smartRetryAfterCooldown = false;
+  smartMotionDetected = false;
+  gpsPowerOff();
+  if (arrival && !configureMpuArmed()) {
+    disableSmartMpuRuntime();
+    return;
+  }
+  setSmartState(arrival ? SMART_ARMED : SMART_WAITING_FOR_STOP);
+}
+
+bool smartPointFixQualityAcceptable() {
+  if (!smartPointToPoint()) return true;
+  return gps.location.age() <= SMART_POINT_FIX_STALE_MS &&
+      gps.date.age() <= SMART_POINT_FIX_STALE_MS &&
+      gps.time.age() <= SMART_POINT_FIX_STALE_MS &&
+      gps.satellites.isValid() &&
+      gps.satellites.age() <= SMART_POINT_FIX_STALE_MS &&
+      gps.satellites.value() >= SMART_POINT_MIN_SATELLITES &&
+      gps.hdop.isValid() && gps.hdop.age() <= SMART_POINT_FIX_STALE_MS &&
+      gps.hdop.value() > 0 && gps.hdop.value() <= SMART_POINT_MAX_HDOP_X100;
 }
 
 void enterSmartCooldown(bool retryAfterCooldown) {
@@ -2106,6 +2185,13 @@ void serviceMpu() {
       smartLastMotionMs = now;
       smartMotionDetected = true;
       mpuQuietSinceMs = 0;
+      if (smartState == SMART_ACQUIRING_STOP) {
+        // Motion resumed before an arrival fix. Cancel it before serviceGps()
+        // can store a moving position; require a new full ten-minute quiet gap.
+        smartFirstFixPending = false;
+        gpsPowerOff();
+        setSmartState(SMART_WAITING_FOR_STOP);
+      }
     }
     return;
   }
@@ -2252,9 +2338,21 @@ void serviceSmartState() {
       break;
 
     case SMART_ACQUIRING:
-      if (elapsedMs(now, smartAcquisitionStartedMs, SMART_ACQUISITION_TIMEOUT_MS)) {
-        DBG_PRINTLN("Smart GNSS acquisition timed out; entering 120 s cooldown.");
-        enterSmartCooldown(true);
+    case SMART_ACQUIRING_STOP:
+      if (elapsedMs(now, smartAcquisitionStartedMs, smartAcquisitionTimeoutMs())) {
+        DBG_PRINTLN("Smart GNSS acquisition timed out.");
+        if (smartPointToPoint()) finishSmartPointAcquisition();
+        else enterSmartCooldown(true);
+      }
+      break;
+
+    case SMART_WAITING_FOR_STOP:
+      // Only accelerometer activity resets this clock. GNSS speed/drift must
+      // never postpone the explicitly requested acceleration-based endpoint.
+      if (elapsedMs(now, smartLastMotionMs, SMART_POINT_STOP_MS)) {
+        startSmartAcquisition();
+        lastWakeReason = SMART_WAKE_STOP;
+        setSmartState(SMART_ACQUIRING_STOP);
       }
       break;
 
@@ -2342,7 +2440,7 @@ void serviceGps() {
   const uint32_t fixSentencesBefore = gps.sentencesWithFix();
   while (Serial1.available()) {
     const char value = (char)Serial1.read();
-    if (smartState == SMART_ACQUIRING &&
+    if (smartAcquisitionActive() &&
         !smartAcquisitionNmeaSynchronized) {
       if (value != '$') continue;
       smartAcquisitionNmeaSynchronized = true;
@@ -2376,7 +2474,7 @@ void serviceGps() {
     // GNSS speed is a second, independent continued-motion signal.  MPU
     // samples remain the trigger; GNSS can keep an active route alive when a
     // device is moving smoothly and the accelerometer is quiet.
-    gnssContinuedMotion(millis());
+    if (!smartPointToPoint()) gnssContinuedMotion(millis());
 
     const bool postStartNavigation =
         gps.sentencesWithFix() != smartAcquisitionFixSentenceBaseline &&
@@ -2385,8 +2483,9 @@ void serviceGps() {
         gps.location.isValid() && gps.date.isValid() && gps.time.isValid() &&
         gps.location.age() <= SMART_GNSS_STALE_MS;
 
-    if (smartState == SMART_ACQUIRING && smartFirstFixPending &&
-        postStartNavigation) {
+    if (smartAcquisitionActive() && smartFirstFixPending &&
+        !elapsedMs(millis(), smartAcquisitionStartedMs, smartAcquisitionTimeoutMs()) &&
+        postStartNavigation && smartPointFixQualityAcceptable()) {
       GpsRecord rec = {};
       rec.epoch = epoch;
       rec.latE7 = (int32_t)(gps.location.lat() * 10000000.0);
@@ -2400,13 +2499,18 @@ void serviceGps() {
 
       if (appendRecord(rec)) {
         smartFirstFixPending = false;
-        smartAcquisitionStartedMs = millis();
-        smartLastMotionMs = smartAcquisitionStartedMs;
-        smartMotionDetected = true;
-        updateSmartMotionReferenceFromRecord(rec);
         gpsEverHadFix = true;
-        DBG_PRINTLN("Smart GNSS fix acquired; entering 120 s cooldown.");
-        enterSmartCooldown(false);
+        if (smartPointToPoint()) {
+          // A GPS fix is not accelerometer evidence: preserve the quiet timer.
+          finishSmartPointAcquisition();
+        } else {
+          smartAcquisitionStartedMs = millis();
+          smartLastMotionMs = smartAcquisitionStartedMs;
+          smartMotionDetected = true;
+          updateSmartMotionReferenceFromRecord(rec);
+          DBG_PRINTLN("Smart GNSS fix acquired; entering 120 s cooldown.");
+          enterSmartCooldown(false);
+        }
       }
       return;
     }
@@ -2621,18 +2725,17 @@ uint16_t smartCooldownRemainingSeconds(uint32_t now) {
 }
 
 void sendSmartInfo() {
-  uint8_t payload[12] = {};
+  uint8_t payload[13] = {};
   const uint32_t now = millis();
 
-  // Fixed v2 wire layout.  Do not append fields: clients use the exact
-  // 12-byte length to distinguish Smart Info from the legacy 65-byte INFO.
+  // v3 retains all v2 offsets and appends the tracking profile at byte 12.
   payload[0] = SMART_INFO_PROTOCOL_VERSION;
   payload[1] = (uint8_t)trackingMode;
   payload[2] = smartSensitivity;
   payload[3] = (uint8_t)smartState;
   payload[4] = (uint8_t)(SMART_VERIFY_WINDOW_MS / 1000UL);
   payload[5] = (uint8_t)min((uint16_t)255, SMART_STANDBY_SLICE_SECONDS);
-  putU16(payload + 6, SMART_FIX_COOLDOWN_SECONDS);
+  putU16(payload + 6, smartPointToPoint() ? 0 : SMART_FIX_COOLDOWN_SECONDS);
   putU16(payload + 8, smartCooldownRemainingSeconds(now));
 
   uint8_t flags = 0;
@@ -2648,6 +2751,7 @@ void sendSmartInfo() {
   }
   payload[10] = flags;
   payload[11] = (uint8_t)lastWakeReason;
+  payload[12] = smartTrackingProfile;
 
   sendPacket(RSP_SMART_INFO, payload, sizeof(payload));
 }
@@ -2711,7 +2815,7 @@ void sendInfo() {
 
   putU16(payload + 60, 0); // reserved battery mV
   payload[62] = 2;
-  payload[63] = 0;
+  payload[63] = 1;
   payload[64] = 0;
 
   sendPacket(RSP_INFO, payload, sizeof(payload));
@@ -2874,7 +2978,7 @@ void handleCommand(uint8_t type, const uint8_t* payload, uint16_t len) {
       break;
 
     case CMD_SET_SMART_CONFIG:
-      if (len != 2) {
+      if (len != 2 && len != 3) {
         sendError(ERR_BAD_PAYLOAD, "SMART_CONFIG_LEN");
         return;
       }
@@ -2886,7 +2990,13 @@ void handleCommand(uint8_t type, const uint8_t* payload, uint16_t len) {
         sendError(ERR_BAD_SENSITIVITY, "BAD_SENSITIVITY");
         return;
       }
-      if (!setSmartConfig((TrackingMode)payload[0], payload[1])) {
+      if (len == 3 && payload[2] > SMART_PROFILE_POINT_TO_POINT) {
+        sendError(ERR_BAD_PAYLOAD, "BAD_PROFILE");
+        return;
+      }
+      // Legacy clients explicitly select their original Continuous behavior.
+      if (!setSmartConfig((TrackingMode)payload[0], payload[1],
+                          len == 3 ? payload[2] : SMART_PROFILE_CONTINUOUS)) {
         sendError(ERR_FLASH, "SMART_CONFIG_SAVE_FAILED");
         return;
       }
@@ -3125,7 +3235,7 @@ void setup() {
     DBG_PRINTLN0();
     DBG_PRINTLN("XIAO GPS Logger starting");
     DBG_PRINTF("FW VERSION: %s\n", FW_VERSION);
-    DBG_PRINTLN("FW diagnostic build: motion-rearm-1");
+    DBG_PRINTLN("FW diagnostic build: point-to-point-1");
     DBG_PRINTLN("USB Serial Monitor baud: 115200");
     DBG_PRINTF("GPS Serial1 baud: %lu\n", (unsigned long)GPS_BAUD);
   }

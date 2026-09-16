@@ -35,6 +35,8 @@ class TrackerPresentationTest {
             SmartMotionState.ACQUIRING to "Acquiring GPS fix",
             SmartMotionState.TRACKING to "Checking movement",
             SmartMotionState.COOLDOWN to "Motion cooldown",
+            SmartMotionState.WAITING_FOR_STOP to "Tracking journey · waiting for stop",
+            SmartMotionState.ACQUIRING_STOP to "Acquiring stop GPS",
             SmartMotionState.UNKNOWN to "Motion status unavailable"
         )
         titles.forEach { (state, title) ->
@@ -59,5 +61,26 @@ class TrackerPresentationTest {
         assertEquals("Interval tracking", armed.copy(
             mode = WakeMode.INTERVAL, flags = 0
         ).statusHeadline())
+    }
+
+    @Test fun pointToPointProfileHasExplicitCapabilityAndDescription() {
+        assertEquals(0, TrackingProfile.CONTINUOUS.wireValue)
+        assertEquals(1, TrackingProfile.POINT_TO_POINT.wireValue)
+        assertEquals(true, TrackingProfile.POINT_TO_POINT.description.contains("10 minutes"))
+        assertEquals(true, TrackingProfile.POINT_TO_POINT.description.contains("6 satellites"))
+        assertEquals(true, armed.profile == TrackingProfile.CONTINUOUS)
+        assertEquals(false, armed.supportsProfiles)
+
+        val profileInfo = armed.copy(
+            protocolVersion = Protocol.SMART_INFO_PROTOCOL_V3,
+            profile = TrackingProfile.POINT_TO_POINT
+        )
+        assertEquals(true, profileInfo.supportsProfiles)
+        assertEquals(TrackingProfile.POINT_TO_POINT, profileInfo.trackingProfile)
+    }
+
+    @Test fun stopWakeReasonIsDecoded() {
+        assertEquals(SmartWakeReason.STOP, SmartWakeReason.fromWire(3))
+        assertEquals(SmartWakeReason.STOP, armed.copy(lastWakeReason = 3).wakeReason)
     }
 }

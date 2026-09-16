@@ -52,8 +52,8 @@ class MainActivity : AppCompatActivity(), BleManager.Listener {
     private lateinit var intervalControls: View
     private lateinit var intervalSummaryText: TextView
     private lateinit var wakeModeButton: Button
-    private lateinit var sensitivityButton: Button
-    private lateinit var sensitivityControls: View
+    private lateinit var profileButton: Button
+    private lateinit var profileControls: View
     private lateinit var smartDetailsText: TextView
     private lateinit var moreButton: Button
     private lateinit var progressBar: ProgressBar
@@ -81,10 +81,12 @@ class MainActivity : AppCompatActivity(), BleManager.Listener {
     private var smartConfigurationUnsupported = false
     private var selectedWakeMode = WakeMode.INTERVAL
     private var selectedSensitivity = SmartSensitivity.BALANCED
+    private var selectedProfile = TrackingProfile.CONTINUOUS
 
     private data class PendingSmartConfig(
         val mode: WakeMode,
         val sensitivity: SmartSensitivity,
+        val profile: TrackingProfile,
         var acknowledged: Boolean = false
     )
 
@@ -216,8 +218,8 @@ class MainActivity : AppCompatActivity(), BleManager.Listener {
         intervalControls = findViewById(R.id.intervalControls)
         intervalSummaryText = findViewById(R.id.intervalSummaryText)
         wakeModeButton = findViewById(R.id.wakeModeButton)
-        sensitivityButton = findViewById(R.id.sensitivityButton)
-        sensitivityControls = findViewById(R.id.sensitivityControls)
+        profileButton = findViewById(R.id.profileButton)
+        profileControls = findViewById(R.id.profileControls)
         smartDetailsText = findViewById(R.id.smartDetailsText)
         moreButton = findViewById(R.id.moreButton)
         progressBar = findViewById(R.id.progressBar)
@@ -393,11 +395,22 @@ class MainActivity : AppCompatActivity(), BleManager.Listener {
         SmartSensitivity.UNKNOWN -> "Unknown"
     }
 
+    private fun profileLabel(profile: TrackingProfile): String = profile.label
+
+    private fun profileDescription(profile: TrackingProfile): String = profile.description
+
+    private fun effectiveSensitivity(sensitivity: SmartSensitivity): SmartSensitivity =
+        if (sensitivity == SmartSensitivity.UNKNOWN) {
+            SmartSensitivity.BALANCED
+        } else {
+            sensitivity
+        }
+
     private fun renderSmartControls() {
         val info = deviceInfo
         val supported = ble.isReady && supportsSmartMotion(info) && !smartConfigurationUnsupported
         val actualMode = smartInfo?.mode ?: selectedWakeMode
-        val actualSensitivity = smartInfo?.sensitivity ?: selectedSensitivity
+        val actualProfile = smartInfo?.profile ?: selectedProfile
         val busy = pendingSmartConfig != null
         // Show mode-specific settings only after the tracker has reported its mode.
         // Legacy firmware has Interval only; Smart selection never changes that saved interval.
@@ -407,7 +420,7 @@ class MainActivity : AppCompatActivity(), BleManager.Listener {
         val intervalSelected = modeKnown &&
             (!supported || actualMode == WakeMode.INTERVAL)
         intervalControls.visibility = if (intervalSelected) View.VISIBLE else View.GONE
-        sensitivityControls.visibility = if (smartSelected) View.VISIBLE else View.GONE
+        profileControls.visibility = if (smartSelected) View.VISIBLE else View.GONE
 
         wakeModeButton.text = when {
             !ble.isReady -> "Connect"
@@ -416,26 +429,33 @@ class MainActivity : AppCompatActivity(), BleManager.Listener {
             smartInfo == null -> "Reading…"
             else -> smartModeLabel(actualMode)
         }
-        sensitivityButton.text = when {
+        profileButton.text = when {
             !ble.isReady || !supportsSmartMotion(info) -> "Unavailable"
             smartConfigurationUnsupported -> "Unavailable"
             smartInfo == null -> "Reading…"
-            else -> sensitivityLabel(actualSensitivity)
+            else -> profileLabel(actualProfile)
         }
         wakeModeButton.contentDescription = "GPS recording mode: ${wakeModeButton.text}"
-        sensitivityButton.contentDescription = "Motion sensitivity: ${sensitivityButton.text}"
+        profileButton.contentDescription = "Tracking profile: ${profileButton.text}"
 
         wakeModeButton.isEnabled = supported && !busy && smartInfo != null
-        sensitivityButton.isEnabled = supported && !busy && smartInfo?.mode == WakeMode.SMART
+        profileButton.isEnabled = supported && !busy && smartInfo?.mode == WakeMode.SMART
 
         smartDetailsText.text = when {
             !ble.isReady -> "Connect to view Smart Motion status"
             !supportsSmartMotion(info) || smartConfigurationUnsupported ->
                 "Smart Motion requires XIAO firmware 2.0+ • saved interval remains available"
             smartInfo == null -> "Reading Smart Motion status…"
-            smartInfo?.mode == WakeMode.SMART ->
-                "Confirms movement for 5 seconds. Saves approximately every 2 minutes while moving. " +
-                    "GPS wake delay depends on standby capability."
+            smartInfo?.mode == WakeMode.SMART -> buildString {
+                append("Confirms movement for 5 seconds. ")
+                append(profileDescription(actualProfile))
+                if (actualProfile == TrackingProfile.CONTINUOUS) {
+                    append(" GPS wake delay depends on standby capability.")
+                }
+                if (!smartInfo!!.supportsProfiles) {
+                    append(" Point-to-point requires a tracker firmware update.")
+                }
+            }
             else -> "Saves GPS points on your selected schedule."
         }
 
@@ -457,7 +477,11 @@ class MainActivity : AppCompatActivity(), BleManager.Listener {
         return started
     }
 
-    private fun sendSmartConfig(mode: WakeMode, sensitivity: SmartSensitivity) {
+    private fun sendSmartConfig(
+        mode: WakeMode,
+        sensitivity: SmartSensitivity,
+        profile: TrackingProfile = selectedProfile
+    ) {
         if (!ble.isReady || !supportsSmartMotion(deviceInfo) || smartConfigurationUnsupported) {
             toast("Smart Motion is not available on this tracker")
             return
@@ -467,13 +491,32 @@ class MainActivity : AppCompatActivity(), BleManager.Listener {
             return
         }
 
-        val pending = PendingSmartConfig(mode, sensitivity)
+        val supportsProfiles = smartInfo?.supportsProfiles == true
+        if (profile == TrackingProfile.POINT_TO_POINT && !supportsProfiles) {
+            val message = "Point-to-point requires a tracker firmware update; Continuous remains available"
+            setActivity(message)
+            toast(message)
+            return
+        }
+
+        val normalizedSensitivity = effectiveSensitivity(sensitivity)
+        val normalizedProfile = if (supportsProfiles) profile else TrackingProfile.CONTINUOUS
+
+        val pending = PendingSmartConfig(mode, normalizedSensitivity, normalizedProfile)
         pendingSmartConfig = pending
         cancelBleIdleDisconnect()
-        if (ble.send(Protocol.setSmartConfigRequest(mode, sensitivity))) {
+        val request = if (supportsProfiles) {
+            Protocol.setSmartConfigRequest(mode, normalizedSensitivity, normalizedProfile)
+        } else {
+            // v2 firmware has no profile byte; its two-byte command explicitly
+            // selects the original Continuous behavior.
+            Protocol.setSmartConfigRequest(mode, normalizedSensitivity)
+        }
+        if (ble.send(request)) {
             selectedWakeMode = mode
-            selectedSensitivity = sensitivity
-            setActivity("Saving ${smartModeLabel(mode)} Smart Motion setting…")
+            selectedSensitivity = normalizedSensitivity
+            selectedProfile = normalizedProfile
+            setActivity("Saving ${smartModeLabel(mode)} ${profileLabel(normalizedProfile)} setting…")
             renderSmartControls()
             activityText.removeCallbacks(smartConfigTimeout)
             activityText.postDelayed(smartConfigTimeout, 3500L)
@@ -489,7 +532,12 @@ class MainActivity : AppCompatActivity(), BleManager.Listener {
         activityText.removeCallbacks(smartConfigTimeout)
         pendingSmartConfig = null
         selectedWakeMode = smartInfo?.mode ?: WakeMode.INTERVAL
-        selectedSensitivity = smartInfo?.sensitivity ?: SmartSensitivity.BALANCED
+        selectedSensitivity = smartInfo?.sensitivity
+            ?.let(::effectiveSensitivity)
+            ?: SmartSensitivity.BALANCED
+        selectedProfile = smartInfo?.profile
+            ?.takeUnless { it == TrackingProfile.UNKNOWN }
+            ?: TrackingProfile.CONTINUOUS
         renderSmartControls()
         toast(message)
         setActivity(message)
@@ -508,11 +556,14 @@ class MainActivity : AppCompatActivity(), BleManager.Listener {
             .setTitle("GPS wake mode")
             .setSingleChoiceItems(choices, checked) { dialog, which ->
                 val mode = if (which == 1) WakeMode.SMART else WakeMode.INTERVAL
-                val sensitivity = smartInfo?.sensitivity ?: selectedSensitivity
+                val sensitivity = effectiveSensitivity(smartInfo?.sensitivity ?: selectedSensitivity)
+                val profile = smartInfo?.profile
+                    ?.takeUnless { it == TrackingProfile.UNKNOWN }
+                    ?: TrackingProfile.CONTINUOUS
                 if (mode == smartInfo?.mode) {
                     dialog.dismiss()
                 } else {
-                    sendSmartConfig(mode, sensitivity)
+                    sendSmartConfig(mode, sensitivity, profile)
                     dialog.dismiss()
                 }
             }
@@ -520,7 +571,7 @@ class MainActivity : AppCompatActivity(), BleManager.Listener {
             .show()
     }
 
-    private fun showSensitivityDialog() {
+    private fun showProfileDialog() {
         val info = smartInfo
         if (!ble.isReady || !supportsSmartMotion(deviceInfo) ||
             info == null || info.mode != WakeMode.SMART
@@ -529,30 +580,42 @@ class MainActivity : AppCompatActivity(), BleManager.Listener {
             return
         }
 
+        val pointLabel = if (info.supportsProfiles) {
+            TrackingProfile.POINT_TO_POINT.label
+        } else {
+            "${TrackingProfile.POINT_TO_POINT.label} (firmware update required)"
+        }
         val choices = arrayOf(
-            "High · 80 mg",
-            "Balanced · 160 mg",
-            "Low · 300 mg"
+            TrackingProfile.CONTINUOUS.label + "\nMotion-triggered fixes ~every 2 min while moving",
+            pointLabel + "\nDeparture + after 10 min without motion"
         )
-        val checked = when (info.sensitivity) {
-            SmartSensitivity.HIGH -> 0
-            SmartSensitivity.BALANCED -> 1
-            SmartSensitivity.LOW -> 2
-            SmartSensitivity.UNKNOWN -> 1
+        val checked = when (info.profile) {
+            TrackingProfile.CONTINUOUS -> 0
+            TrackingProfile.POINT_TO_POINT -> 1
+            TrackingProfile.UNKNOWN -> -1
         }
         AlertDialog.Builder(this)
-            .setTitle("Movement sensitivity")
-            .setMessage("Higher sensitivity can wake for smaller movement.")
+            .setTitle("Tracking profile")
             .setSingleChoiceItems(choices, checked) { dialog, which ->
-                val sensitivity = when (which) {
-                    0 -> SmartSensitivity.HIGH
-                    2 -> SmartSensitivity.LOW
-                    else -> SmartSensitivity.BALANCED
+                val profile = when (which) {
+                    0 -> TrackingProfile.CONTINUOUS
+                    1 -> TrackingProfile.POINT_TO_POINT
+                    else -> TrackingProfile.UNKNOWN
                 }
-                if (sensitivity == info.sensitivity) {
+                if (profile == TrackingProfile.POINT_TO_POINT && !info.supportsProfiles) {
+                    val message = "Point-to-point requires a tracker firmware update; Continuous remains available"
+                    setActivity(message)
+                    toast(message)
+                    return@setSingleChoiceItems
+                }
+                if (profile == info.profile) {
                     dialog.dismiss()
                 } else {
-                    sendSmartConfig(WakeMode.SMART, sensitivity)
+                    sendSmartConfig(
+                        WakeMode.SMART,
+                        effectiveSensitivity(info.sensitivity),
+                        profile
+                    )
                     dialog.dismiss()
                 }
             }
@@ -568,6 +631,12 @@ class MainActivity : AppCompatActivity(), BleManager.Listener {
                 if (info.motionState == SmartMotionState.COOLDOWN && !info.runtimeIntervalFallback) {
                     add("Last reported cooldown: ${info.cooldownRemainingSeconds}s remaining")
                 }
+                when (info.motionState) {
+                    SmartMotionState.WAITING_FOR_STOP -> add("Tracking journey • waiting for stop")
+                    SmartMotionState.ACQUIRING_STOP -> add("Acquiring GPS endpoint")
+                    else -> Unit
+                }
+                if (info.wakeReason == SmartWakeReason.STOP) add("Last wake: Stop")
                 when {
                     !info.cas12Verified -> add("GPS standby unavailable")
                     info.cas12Active -> add("GPS standby active")
@@ -594,13 +663,19 @@ class MainActivity : AppCompatActivity(), BleManager.Listener {
 
     private fun showSmartInfo(info: SmartInfo) {
         selectedWakeMode = info.mode
-        selectedSensitivity = info.sensitivity
+        selectedSensitivity = effectiveSensitivity(info.sensitivity)
+        selectedProfile = info.profile
+            .takeUnless { it == TrackingProfile.UNKNOWN }
+            ?: TrackingProfile.CONTINUOUS
         smartInfo = info
         var persistenceVerified = false
 
         if (pendingSmartConfig?.acknowledged == true) {
             val pending = pendingSmartConfig ?: return
-            if (pending.mode == info.mode && pending.sensitivity == info.sensitivity) {
+            if (pending.mode == info.mode &&
+                pending.sensitivity == effectiveSensitivity(info.sensitivity) &&
+                pending.profile == info.profile
+            ) {
                 activityText.removeCallbacks(smartConfigTimeout)
                 pendingSmartConfig = null
                 persistenceVerified = true
@@ -801,8 +876,8 @@ class MainActivity : AppCompatActivity(), BleManager.Listener {
             showWakeModeDialog()
         }
 
-        sensitivityButton.setOnClickListener {
-            showSensitivityDialog()
+        profileButton.setOnClickListener {
+            showProfileDialog()
         }
 
         moreButton.setOnClickListener {
@@ -872,6 +947,7 @@ class MainActivity : AppCompatActivity(), BleManager.Listener {
         pendingSmartConfig = null
         selectedWakeMode = WakeMode.INTERVAL
         selectedSensitivity = SmartSensitivity.BALANCED
+        selectedProfile = TrackingProfile.CONTINUOUS
         renderSmartControls()
         setConnectionState("Connected", ConnectionTone.CONNECTED)
         connectButton.text = "Connected"
@@ -924,6 +1000,7 @@ class MainActivity : AppCompatActivity(), BleManager.Listener {
         smartInfo = null
         smartInfoRequested = false
         smartConfigurationUnsupported = false
+        selectedProfile = TrackingProfile.CONTINUOUS
         cancelBleIdleDisconnect()
         activityText.removeCallbacks(intervalCommandTimeout)
         activityText.removeCallbacks(smartConfigTimeout)
@@ -1553,7 +1630,7 @@ class MainActivity : AppCompatActivity(), BleManager.Listener {
     }
 
     companion object {
-        private const val APP_VERSION = "2.0.0"
+        private const val APP_VERSION = "2.1.0"
         // OSM-derived vector basemap from OpenFreeMap.
         // No API key or registration is required by the public instance.
         private const val PREFS_NAME = "xiao_tracker_prefs"

@@ -12,6 +12,8 @@ internal fun SmartInfo.statusHeadline(): String = when {
         SmartMotionState.ACQUIRING -> "Acquiring GPS fix"
         SmartMotionState.TRACKING -> "Checking movement"
         SmartMotionState.COOLDOWN -> "Motion cooldown"
+        SmartMotionState.WAITING_FOR_STOP -> "Tracking journey · waiting for stop"
+        SmartMotionState.ACQUIRING_STOP -> "Acquiring stop GPS"
         SmartMotionState.UNKNOWN -> "Motion status unavailable"
     }
 }

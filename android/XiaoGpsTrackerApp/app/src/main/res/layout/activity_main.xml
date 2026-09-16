@@ -198,7 +198,7 @@
                 </LinearLayout>
 
                 <LinearLayout
-                    android:id="@+id/sensitivityControls"
+                    android:id="@+id/profileControls"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="9dp"
@@ -208,19 +208,19 @@
                     <TextView
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:text="Motion sensitivity"
+                        android:text="Tracking profile"
                         android:textColor="@color/text_secondary"
                         android:textSize="12sp"
                         android:textStyle="bold" />
 
                     <Button
-                        android:id="@+id/sensitivityButton"
+                        android:id="@+id/profileButton"
                         style="@style/Widget.Xiao.SecondaryButton"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
                         android:minHeight="48dp"
                         android:layout_marginTop="6dp"
-                        android:contentDescription="Change motion sensitivity"
+                        android:contentDescription="Change tracking profile"
                         android:enabled="false"
                         android:text="Unavailable" />
                 </LinearLayout>

@@ -1,3 +1,19 @@
+# 2.1.0 — Point-to-point tracking
+
+- Smart Motion now offers Continuous and Point-to-point profiles in the app,
+  replacing the motion-sensitivity picker. Existing sensitivity is preserved.
+- Point-to-point captures after confirmed departure and after ten minutes with
+  no acceleration. New acceleration resets the stop timer or cancels an arrival
+  acquisition. There are no periodic points during a journey.
+- Point-to-point waits up to five minutes for fresh GPS with at least six
+  satellites and HDOP at most 1.50. Failed attempts are bounded; stationary
+  points are not repeatedly attempted. Accuracy remains reception-dependent.
+- Metadata v3 preserves owner, interval, and calibration while migrating older
+  settings to Continuous. Smart protocol v3 appends the profile; the app also
+  supports v2 firmware, with Continuous available until a firmware update.
+- Firmware host checks cover stop timing, rollover, GPS quality, persistence,
+  and legacy Continuous regressions. Physical board validation remains pending.
+
 # Release 2.0.0 — Smart Motion
 
 Smart Motion v2.0 adds motion-triggered logging while retaining the existing

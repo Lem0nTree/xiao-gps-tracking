@@ -52,7 +52,10 @@ preamble = r'''
 #define noInterrupts() ((void)0)
 #define interrupts() ((void)0)
 enum { SMART_DISABLED, SMART_ARMED, SMART_VERIFYING, SMART_ACQUIRING,
-       SMART_TRACKING, SMART_COOLDOWN };
+       SMART_TRACKING, SMART_COOLDOWN, SMART_WAITING_FOR_STOP, SMART_ACQUIRING_STOP };
+enum { SMART_WAKE_NONE, SMART_WAKE_MOTION, SMART_WAKE_RETRY, SMART_WAKE_STOP };
+uint8_t smartTrackingProfile, lastWakeReason;
+bool smartFirstFixPending;
 uint32_t fakeNow;
 uint32_t millis(void) { return fakeNow; }
 bool mpuAvailable, mpuInterruptAttached, mpuDataReadyPending;
@@ -184,6 +187,66 @@ int main(void) {
   puts("PASS Interval scheduler still wakes at its own deadline");
   smartSelected = true; smartState = SMART_ARMED;
 
+  smartTrackingProfile = SMART_PROFILE_POINT_TO_POINT;
+  fakeNow = 10000; smartLastMotionMs = fakeNow;
+  candidate(true); continuousMovement();
+  assert(smartAcquisitionTimeoutMs() == 300000);
+  uint32_t lastAcceleration = smartLastMotionMs;
+  fakeNow += 90000; serviceSmartState();
+  assert(smartState == SMART_ACQUIRING);
+  finishSmartPointAcquisition();
+  assert(smartState == SMART_WAITING_FOR_STOP && !gpsPowered);
+  assert(smartLastMotionMs == lastAcceleration);
+  int beforePoints = acquisitions;
+  for (int i = 0; i < 5; i++) {
+    fakeNow += 120000; fakeStatus = MPU_INT_STATUS_MOTION; fakePin = HIGH;
+    serviceMpu(); serviceSmartState(); serviceGpsPowerState();
+    assert(smartState == SMART_WAITING_FOR_STOP && !gpsPowered);
+    assert(acquisitions == beforePoints && smartLastMotionMs == fakeNow);
+  }
+  puts("PASS Point-to-point movement resets stop clock without periodic GPS");
+
+  lastAcceleration = smartLastMotionMs;
+  fakeNow = lastAcceleration + 599999; serviceSmartState();
+  assert(smartState == SMART_WAITING_FOR_STOP);
+  fakeNow++; serviceSmartState(); serviceGpsPowerState();
+  assert(smartState == SMART_ACQUIRING_STOP && gpsPowered);
+  assert(acquisitions == beforePoints + 1 && lastWakeReason == SMART_WAKE_STOP);
+  fakeNow += 1000; fakeStatus = MPU_INT_STATUS_MOTION; fakePin = HIGH;
+  serviceMpu();
+  assert(smartState == SMART_WAITING_FOR_STOP && !gpsPowered);
+  fakeNow += 599999; serviceSmartState();
+  assert(smartState == SMART_WAITING_FOR_STOP);
+  fakeNow++; serviceSmartState(); finishSmartPointAcquisition();
+  assert(smartState == SMART_ARMED);
+  beforePoints = acquisitions;
+  fakeNow += 1200000; serviceSmartState();
+  assert(smartState == SMART_ARMED && acquisitions == beforePoints);
+  puts("PASS exact 10-minute stop, resumed-motion cancellation, one arrival only");
+
+  candidate(true); continuousMovement();
+  fakeNow = smartAcquisitionStartedMs + 299999; serviceSmartState();
+  assert(smartState == SMART_ACQUIRING);
+  fakeNow++; serviceSmartState();
+  assert(smartState == SMART_WAITING_FOR_STOP);
+  fakeNow = smartLastMotionMs + 600000; serviceSmartState();
+  assert(smartState == SMART_ACQUIRING_STOP);
+  fakeNow += 300000; serviceSmartState();
+  assert(smartState == SMART_ARMED);
+  puts("PASS Point-to-point five-minute GPS timeouts remain bounded");
+
+  smartState = SMART_WAITING_FOR_STOP;
+  smartLastMotionMs = UINT32_MAX - 300000;
+  fakeNow = smartLastMotionMs + 599999; serviceSmartState();
+  assert(smartState == SMART_WAITING_FOR_STOP);
+  fakeNow++; serviceSmartState();
+  assert(smartState == SMART_ACQUIRING_STOP);
+  finishSmartPointAcquisition();
+  smartLastMotionMs = 0; smartState = SMART_WAITING_FOR_STOP;
+  fakeNow = 600000; serviceSmartState();
+  assert(smartState == SMART_ACQUIRING_STOP);
+  puts("PASS Point-to-point stop clock across rollover and zero timestamp");
+
   i2cOk = false; fakePin = HIGH; serviceMpu();
   assert(runtimeIntervalFallback);
   puts("PASS I2C failure falls back to Interval");
@@ -191,7 +254,9 @@ int main(void) {
 }
 '''
 
-names = ['timeReached', 'elapsedMs', 'smartCooldownObservationWindowDue',
+names = ['timeReached', 'elapsedMs', 'smartPointToPoint', 'smartAcquisitionActive',
+         'smartAcquisitionTimeoutMs', 'finishSmartPointAcquisition',
+         'smartCooldownObservationWindowDue',
          'secondsUntilGpsWake', 'scheduleGpsSleep', 'serviceGpsPowerState',
          'rejectMpuVerification', 'serviceMpu', 'serviceSmartState']
 with tempfile.TemporaryDirectory(prefix='xiao-motion-tests-') as directory:

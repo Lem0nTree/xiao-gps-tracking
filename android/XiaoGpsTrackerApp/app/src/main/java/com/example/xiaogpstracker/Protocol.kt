@@ -80,6 +80,32 @@ enum class SmartSensitivity(
     }
 }
 
+/** The recording behavior used while Smart motion mode is enabled. */
+enum class TrackingProfile(
+    val wireValue: Int,
+    val label: String,
+    val description: String
+) {
+    CONTINUOUS(
+        0,
+        "Continuous",
+        "Motion-triggered fixes every ~2 minutes while moving."
+    ),
+    POINT_TO_POINT(
+        1,
+        "Point-to-point",
+        "One fix after confirmed movement starts and one after 10 minutes without " +
+            "acceleration. GPS runs for up to 5 minutes while waiting for at least " +
+            "6 satellites and HDOP ≤1.5."
+    ),
+    UNKNOWN(-1, "Unknown", "The tracker reported an unsupported tracking profile.");
+
+    companion object {
+        fun fromWire(value: Int): TrackingProfile =
+            values().firstOrNull { it.wireValue == value } ?: UNKNOWN
+    }
+}
+
 /** State reported by the Smart Motion scheduler. */
 enum class SmartMotionState(val wireValue: Int, val label: String) {
     DISABLED(0, "Disabled"),
@@ -88,10 +114,26 @@ enum class SmartMotionState(val wireValue: Int, val label: String) {
     ACQUIRING(3, "Waiting for GPS"),
     TRACKING(4, "GPS receiver active"),
     COOLDOWN(5, "Cooldown"),
+    WAITING_FOR_STOP(6, "Waiting for stop"),
+    ACQUIRING_STOP(7, "Acquiring stop GPS"),
     UNKNOWN(-1, "Unknown");
 
     companion object {
         fun fromWire(value: Int): SmartMotionState =
+            values().firstOrNull { it.wireValue == value } ?: UNKNOWN
+    }
+}
+
+/** Reason for the most recent Smart scheduler wake, as reported by firmware. */
+enum class SmartWakeReason(val wireValue: Int, val label: String) {
+    NONE(0, "None"),
+    MOTION(1, "Motion"),
+    RETRY(2, "Retry"),
+    STOP(3, "Stop"),
+    UNKNOWN(-1, "Unknown");
+
+    companion object {
+        fun fromWire(value: Int): SmartWakeReason =
             values().firstOrNull { it.wireValue == value } ?: UNKNOWN
     }
 }
@@ -101,6 +143,7 @@ enum class SmartMotionState(val wireValue: Int, val label: String) {
 typealias SmartMode = WakeMode
 typealias Sensitivity = SmartSensitivity
 typealias MotionState = SmartMotionState
+typealias WakeReason = SmartWakeReason
 
 data class SmartInfo(
     val protocolVersion: Int,
@@ -112,7 +155,8 @@ data class SmartInfo(
     val fixCooldownSeconds: Int,
     val cooldownRemainingSeconds: Int,
     val flags: Int,
-    val lastWakeReason: Int
+    val lastWakeReason: Int,
+    val profile: TrackingProfile = TrackingProfile.CONTINUOUS
 ) {
     val modeValue: Int get() = mode.wireValue
     val sensitivityValue: Int get() = sensitivity.wireValue
@@ -123,6 +167,14 @@ data class SmartInfo(
 
     val wakeMode: WakeMode get() = mode
     val smartSensitivity: SmartSensitivity get() = sensitivity
+    val trackingProfile: TrackingProfile get() = profile
+    val profileValue: Int get() = profile.wireValue
+    val trackingProfileValue: Int get() = profileValue
+    val supportsProfiles: Boolean
+        get() = protocolVersion == Protocol.SMART_INFO_PROTOCOL_V3
+    val supportsTrackingProfiles: Boolean get() = supportsProfiles
+    val wakeReason: SmartWakeReason get() = SmartWakeReason.fromWire(lastWakeReason)
+    val smartWakeReason: SmartWakeReason get() = wakeReason
 
     val mpuPresent: Boolean get() = (flags and Protocol.SMART_FLAG_MPU_PRESENT) != 0
     val mpuInterruptArmed: Boolean get() = (flags and Protocol.SMART_FLAG_MPU_INTERRUPT_ARMED) != 0
@@ -154,6 +206,15 @@ object Protocol {
     const val RSP_ACK = 0x84
     const val RSP_SMART_INFO = 0x85
     const val RSP_ERROR = 0xFF
+
+    const val SMART_INFO_PROTOCOL_V2 = 2
+    const val SMART_INFO_PROTOCOL_V3 = 3
+    const val SMART_INFO_V2_PAYLOAD_SIZE = 12
+    const val SMART_INFO_V3_PAYLOAD_SIZE = 13
+    const val SMART_WAKE_REASON_NONE = 0
+    const val SMART_WAKE_REASON_MOTION = 1
+    const val SMART_WAKE_REASON_RETRY = 2
+    const val SMART_WAKE_REASON_STOP = 3
 
     // SmartInfo.flags bits.  There is intentionally no GPS power-off bit:
     // Smart Motion reports receiver/standby state, not a physical GPS gate.
@@ -195,6 +256,12 @@ object Protocol {
     fun setSmartConfigRequest(mode: WakeMode, sensitivity: SmartSensitivity): ByteArray =
         setSmartConfigRequest(mode.wireValue, sensitivity.wireValue)
 
+    fun setSmartConfigRequest(
+        mode: WakeMode,
+        sensitivity: SmartSensitivity,
+        profile: TrackingProfile
+    ): ByteArray = setSmartConfigRequest(mode.wireValue, sensitivity.wireValue, profile.wireValue)
+
     fun setSmartConfigRequest(mode: Int, sensitivity: Int): ByteArray {
         require(mode == WakeMode.INTERVAL.wireValue || mode == WakeMode.SMART.wireValue) {
             "Unsupported wake mode: $mode"
@@ -205,6 +272,27 @@ object Protocol {
             byteArrayOf(mode.toByte(), sensitivity.toByte())
         )
     }
+
+    fun setSmartConfigRequest(mode: Int, sensitivity: Int, profile: Int): ByteArray {
+        require(mode == WakeMode.INTERVAL.wireValue || mode == WakeMode.SMART.wireValue) {
+            "Unsupported wake mode: $mode"
+        }
+        require(sensitivity in 0..2) { "Unsupported Smart Motion sensitivity: $sensitivity" }
+        require(profile == TrackingProfile.CONTINUOUS.wireValue ||
+            profile == TrackingProfile.POINT_TO_POINT.wireValue) {
+            "Unsupported tracking profile: $profile"
+        }
+        return encode(
+            CMD_SET_SMART_CONFIG,
+            byteArrayOf(mode.toByte(), sensitivity.toByte(), profile.toByte())
+        )
+    }
+
+    fun setSmartConfigRequest(
+        mode: Int,
+        sensitivity: Int,
+        profile: TrackingProfile
+    ): ByteArray = setSmartConfigRequest(mode, sensitivity, profile.wireValue)
 
     fun downloadRequest(afterSeq: Long): ByteArray {
         val payload = ByteBuffer.allocate(4)
@@ -325,12 +413,26 @@ object Protocol {
         )
     }
 
-    /** Parse the exact 12-byte little-endian RSP_SMART_INFO payload. */
+    /**
+     * Parse a versioned little-endian RSP_SMART_INFO payload.
+     *
+     * Version 2 is exactly 12 bytes and predates tracking profiles, so it is
+     * represented as Continuous. Version 3 appends profile at byte 12.
+     * Rejecting every other version/length pair prevents a future payload from
+     * being silently interpreted with the wrong offsets.
+     */
     fun parseSmartInfo(payload: ByteArray): SmartInfo? {
-        if (payload.size != 12) return null
+        if (payload.size != SMART_INFO_V2_PAYLOAD_SIZE &&
+            payload.size != SMART_INFO_V3_PAYLOAD_SIZE
+        ) return null
 
         val b = ByteBuffer.wrap(payload).order(ByteOrder.LITTLE_ENDIAN)
         val protocolVersion = b.get().toInt() and 0xFF
+        when (protocolVersion) {
+            SMART_INFO_PROTOCOL_V2 -> if (payload.size != SMART_INFO_V2_PAYLOAD_SIZE) return null
+            SMART_INFO_PROTOCOL_V3 -> if (payload.size != SMART_INFO_V3_PAYLOAD_SIZE) return null
+            else -> return null
+        }
         val mode = WakeMode.fromWire(b.get().toInt() and 0xFF)
         val sensitivity = SmartSensitivity.fromWire(b.get().toInt() and 0xFF)
         val motionState = SmartMotionState.fromWire(b.get().toInt() and 0xFF)
@@ -340,6 +442,11 @@ object Protocol {
         val cooldownRemainingSeconds = b.short.toInt() and 0xFFFF
         val flags = b.get().toInt() and 0xFF
         val lastWakeReason = b.get().toInt() and 0xFF
+        val profile = if (protocolVersion == SMART_INFO_PROTOCOL_V3) {
+            TrackingProfile.fromWire(b.get().toInt() and 0xFF)
+        } else {
+            TrackingProfile.CONTINUOUS
+        }
 
         return SmartInfo(
             protocolVersion = protocolVersion,
@@ -351,7 +458,8 @@ object Protocol {
             fixCooldownSeconds = fixCooldownSeconds,
             cooldownRemainingSeconds = cooldownRemainingSeconds,
             flags = flags,
-            lastWakeReason = lastWakeReason
+            lastWakeReason = lastWakeReason,
+            profile = profile
         )
     }
 
