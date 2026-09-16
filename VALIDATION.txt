@@ -4,6 +4,18 @@ This record separates software/source checks from tests that require the
 assembled hardware. It contains no measured current, runtime, or calibration
 result.
 
+ANDROID LAUNCHER ICON REFRESH (2026-09-16)
+
+PASS - Resource XML parses. Native SVG and Android vector use identical paths.
+PASS - Adaptive resources for API 26 and explicit themed monochrome resources
+       for API 33 resolve to the new foreground and background.
+PASS - All ten standard/round density PNGs have the expected 48/72/96/144/192 px
+       dimensions and transparent corners. Rendered artwork stays inside the
+       adaptive 33 dp safe radius (measured maximum approximately 30.58 dp).
+PASS - Visual inspection of the rendered 512 px preview and 48 px round icon.
+PENDING - Android build and launcher/device checks; Java/JDK unavailable here.
+          See docs/branding/README.md for design sources and regeneration.
+
 ANDROID DASHBOARD REFRESH (2026-09-16)
 
 PASS - Static resource checks: XML parsing, unique view IDs, single ScrollView
