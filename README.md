@@ -107,13 +107,20 @@ Interval/Smart selector, Smart sensitivity, map, and time-based route timeline.
 Choose the GPS mode first: Interval shows the logging interval controls, while
 Smart shows motion sensitivity and hides the interval controls. The saved
 interval is preserved and shown again when returning to Interval mode.
+The dashboard separates tracker status, recording settings, and route history.
+Its content scrolls on smaller screens while Connect and Sync remain accessible
+at the bottom. Map gestures stay within the map; swipe outside it to scroll the
+dashboard. Smart headlines show the motion state independently of GPS standby,
+and any cooldown duration is explicitly the last value reported by the tracker.
 It syncs the local log over BLE and exports tracks as GPX or CSV without sending
 them to a cloud service. It also reports runtime fallback and receiver standby
 capability when the firmware provides those statuses.
 
 <p align="center">
-  <img src="docs/images/xiao-tracker-android-app.jpg" alt="XIAO Tracker Android app showing tracker status, wake mode, map, and timeline" width="360">
+  <img src="docs/images/xiao-tracker-android-app.jpg" alt="Earlier XIAO Tracker app interface, before the dashboard refresh" width="360">
 </p>
+
+The screenshot above shows the earlier interface; an updated device capture is pending.
 
 ## Included in this repository
 

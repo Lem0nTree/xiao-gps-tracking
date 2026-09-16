@@ -58,6 +58,7 @@ class MainActivity : AppCompatActivity(), BleManager.Listener {
     private lateinit var moreButton: Button
     private lateinit var progressBar: ProgressBar
     private lateinit var mapView: MapView
+    private lateinit var mapEmptyText: TextView
 
     private lateinit var ble: BleManager
     private lateinit var store: TrackStore
@@ -221,6 +222,7 @@ class MainActivity : AppCompatActivity(), BleManager.Listener {
         moreButton = findViewById(R.id.moreButton)
         progressBar = findViewById(R.id.progressBar)
         mapView = findViewById(R.id.mapView)
+        mapEmptyText = findViewById(R.id.mapEmptyText)
 
         store = TrackStore(this)
         ble = BleManager(this, this)
@@ -420,6 +422,8 @@ class MainActivity : AppCompatActivity(), BleManager.Listener {
             smartInfo == null -> "Reading…"
             else -> sensitivityLabel(actualSensitivity)
         }
+        wakeModeButton.contentDescription = "GPS recording mode: ${wakeModeButton.text}"
+        sensitivityButton.contentDescription = "Motion sensitivity: ${sensitivityButton.text}"
 
         wakeModeButton.isEnabled = supported && !busy && smartInfo != null
         sensitivityButton.isEnabled = supported && !busy && smartInfo?.mode == WakeMode.SMART
@@ -430,15 +434,16 @@ class MainActivity : AppCompatActivity(), BleManager.Listener {
                 "Smart Motion requires XIAO firmware 2.0+ • saved interval remains available"
             smartInfo == null -> "Reading Smart Motion status…"
             smartInfo?.mode == WakeMode.SMART ->
-                "5-second movement confirmation • Approximately two minutes between moving fixes • " +
-                    "GPS wake delay depends on standby capability"
-            else -> "Interval mode • Smart Motion is available on this tracker"
+                "Confirms movement for 5 seconds. Saves approximately every 2 minutes while moving. " +
+                    "GPS wake delay depends on standby capability."
+            else -> "Saves GPS points on your selected schedule."
         }
 
         val intervalEditingAllowed = intervalSelected && supportsIntervalConfiguration(info)
         intervalButton.isEnabled = intervalEditingAllowed && !busy
         if (info != null) {
             intervalSummaryText.text = intervalSummary(info.logIntervalSeconds)
+            intervalButton.contentDescription = "Logging interval: ${formatInterval(info.logIntervalSeconds)}"
         }
     }
 
@@ -556,24 +561,13 @@ class MainActivity : AppCompatActivity(), BleManager.Listener {
     }
 
     private fun smartStatusText(info: SmartInfo): String {
-        val state = if (info.mode == WakeMode.SMART) {
-            when (info.motionState) {
-                SmartMotionState.DISABLED -> "Smart Motion disabled"
-                SmartMotionState.ARMED -> "Armed"
-                SmartMotionState.VERIFYING -> "Confirming motion"
-                SmartMotionState.ACQUIRING -> "Waiting for GPS"
-                SmartMotionState.TRACKING -> "GPS receiver active"
-                SmartMotionState.COOLDOWN -> "Cooldown"
-                SmartMotionState.UNKNOWN -> "Smart Motion state unknown"
-            }
-        } else {
-            "Interval"
-        }
-
         val hardware = buildList {
             if (info.mode == WakeMode.SMART) {
                 if (info.runtimeIntervalFallback) add("Runtime Interval fallback")
-                if (!info.mpuPresent || !info.mpuInterruptArmed) add("MPU fault")
+                if (!info.mpuPresent || info.mpuFault) add("MPU fault")
+                if (info.motionState == SmartMotionState.COOLDOWN && !info.runtimeIntervalFallback) {
+                    add("Last reported cooldown: ${info.cooldownRemainingSeconds}s remaining")
+                }
                 when {
                     !info.cas12Verified -> add("GPS standby unavailable")
                     info.cas12Active -> add("GPS standby active")
@@ -586,7 +580,16 @@ class MainActivity : AppCompatActivity(), BleManager.Listener {
                 add("GPS standby ready")
             }
         }.joinToString(" • ")
-        return "$state • $hardware"
+        return hardware
+    }
+
+    private fun renderSmartHeadline(info: SmartInfo) {
+        gpsText.text = info.statusHeadline()
+        gpsText.setTextColor(getColor(when {
+            info.runtimeIntervalFallback || info.mpuFault || !info.mpuPresent -> R.color.danger
+            info.motionState == SmartMotionState.ARMED -> R.color.success
+            else -> R.color.text_primary
+        }))
     }
 
     private fun showSmartInfo(info: SmartInfo) {
@@ -609,15 +612,11 @@ class MainActivity : AppCompatActivity(), BleManager.Listener {
         }
 
         val status = smartStatusText(info)
-        gpsText.setTextColor(
-            when {
-                info.mode == WakeMode.SMART && (info.runtimeIntervalFallback || info.mpuFault) ->
-                    getColor(R.color.danger)
-                info.motionState == SmartMotionState.ARMED && info.cas12Active ->
-                    getColor(R.color.success)
-                else -> getColor(R.color.warning)
-            }
-        )
+        if (info.mode == WakeMode.SMART) {
+            renderSmartHeadline(info)
+        } else {
+            deviceInfo?.let { showDeviceInfo(it, scheduleRefresh = false) }
+        }
         setActivity(
             if (persistenceVerified) {
                 "Smart Motion setting saved and verified • $status"
@@ -934,6 +933,8 @@ class MainActivity : AppCompatActivity(), BleManager.Listener {
         connectButton.text = "Connect"
         connectButton.isEnabled = true
         setConnectionState("Offline", ConnectionTone.NEUTRAL)
+        gpsText.text = "Tracker disconnected"
+        gpsText.setTextColor(getColor(R.color.text_secondary))
         setActivity("Tracker disconnected")
         progressBar.visibility = View.GONE
     }
@@ -1104,7 +1105,7 @@ class MainActivity : AppCompatActivity(), BleManager.Listener {
         }
     }
 
-    private fun showDeviceInfo(info: DeviceInfo) {
+    private fun showDeviceInfo(info: DeviceInfo, scheduleRefresh: Boolean = true) {
         val pct = if (info.capacity == 0L) 0 else
             ((info.storedCount * 100) / info.capacity).toInt()
 
@@ -1171,6 +1172,7 @@ class MainActivity : AppCompatActivity(), BleManager.Listener {
         }
 
         gpsText.text = gpsStatus
+        smartInfo?.takeIf { it.mode == WakeMode.SMART }?.let(::renderSmartHeadline)
         storageText.text =
             "Device ${info.storedCount}/${info.capacity} ($pct%)  •  Phone ${store.records.size} points"
 
@@ -1192,7 +1194,7 @@ class MainActivity : AppCompatActivity(), BleManager.Listener {
         connectButton.text = "Connected"
         connectButton.isEnabled = false
 
-        if (info.storedCount == 0L && ble.isReady) {
+        if (scheduleRefresh && info.storedCount == 0L && ble.isReady) {
             activityText.postDelayed({
                 if (ble.isReady && deviceInfo?.storedCount == 0L) {
                     requestTrackerInfo()
@@ -1286,6 +1288,7 @@ class MainActivity : AppCompatActivity(), BleManager.Listener {
 
     private fun configureTimeline(selectLatest: Boolean) {
         val records = store.records
+        mapEmptyText.visibility = if (records.isEmpty()) View.VISIBLE else View.GONE
 
         if (records.isEmpty()) {
             selectedTimelineIndex = -1

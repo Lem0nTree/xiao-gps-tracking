@@ -4,6 +4,19 @@ This record separates software/source checks from tests that require the
 assembled hardware. It contains no measured current, runtime, or calibration
 result.
 
+ANDROID DASHBOARD REFRESH (2026-09-16)
+
+PASS - Static resource checks: XML parsing, unique view IDs, single ScrollView
+       child, bottom action buttons outside the scroll area, mode selector
+       before conditional interval controls, 48 dp minimum button targets,
+       and status text without line truncation.
+ADDED - TrackerPresentationTest covers motion headlines, receiver-state
+        independence, sensor faults, fallback priority, and Interval behavior.
+BLOCKED - APK compilation and JUnit execution: Java/JDK is absent on this host.
+PENDING - Device/emulator visual and gesture checks: light/dark themes, 320 dp
+          screen width, landscape, large fonts, map pan/pinch vs page scrolling,
+          empty/populated route, BLE reconnect, and mode switching.
+
 MOTION REARM PATCH (2026-09-16)
 
 PASS - Host checks execute extracted production scheduler/verifier bodies with

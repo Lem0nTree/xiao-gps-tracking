@@ -6,7 +6,7 @@
     <color name="surface_border">#FF2B303A</color>
     <color name="text_primary">#FFF3F5F7</color>
     <color name="text_secondary">#FFAAB2BE</color>
-    <color name="text_tertiary">#FF7E8794</color>
+    <color name="text_tertiary">#FFA1AAB8</color>
     <color name="track_future">#FF4D5663</color>
     <color name="accent">#FF79A6FF</color>
     <color name="success">#FF54C98C</color>
@@ -18,7 +18,7 @@
     <color name="danger_disabled_surface">#FF211C20</color>
     <color name="map_overlay">#E61A1D23</color>
 
-    <color name="primary_button_bg">#FFF3F5F7</color>
+    <color name="primary_button_bg">#FF94B7FF</color>
     <color name="primary_button_text">#FF111318</color>
 
     <color name="status_neutral_bg">#FF22262E</color>

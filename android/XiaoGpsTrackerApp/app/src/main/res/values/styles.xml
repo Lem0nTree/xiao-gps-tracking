@@ -14,7 +14,7 @@
 
     <style name="Widget.Xiao.PrimaryButton" parent="Widget.AppCompat.Button">
         <item name="android:background">@drawable/bg_primary_button</item>
-        <item name="android:textColor">@color/primary_button_text</item>
+        <item name="android:textColor">@color/button_primary_text</item>
         <item name="android:textAllCaps">false</item>
         <item name="android:textSize">14sp</item>
         <item name="android:textStyle">bold</item>
@@ -25,7 +25,7 @@
 
     <style name="Widget.Xiao.SecondaryButton" parent="Widget.AppCompat.Button">
         <item name="android:background">@drawable/bg_secondary_button</item>
-        <item name="android:textColor">@color/text_primary</item>
+        <item name="android:textColor">@color/button_secondary_text</item>
         <item name="android:textAllCaps">false</item>
         <item name="android:textSize">13sp</item>
         <item name="android:textStyle">bold</item>
