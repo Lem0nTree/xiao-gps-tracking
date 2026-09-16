@@ -4,6 +4,27 @@ This record separates software/source checks from tests that require the
 assembled hardware. It contains no measured current, runtime, or calibration
 result.
 
+MOTION REARM PATCH (2026-09-16)
+
+PASS - Host checks execute extracted production scheduler/verifier bodies with
+       a fake clock and peripherals, compiled with GCC. Focused checks cover
+       latched-high IRQ recovery, jittered verification, three consecutive
+       120-second cooldowns, stopped/restarted motion, failed-fix retry,
+       millis rollover, stationary quiet-gap rejection, obsolete Interval
+       deadline isolation, normal Interval wake, and I2C failure fallback.
+       Run: python3 firmware/tests/test_motion_runtime.py
+PASS - Actual MPU profile functions tested with fake registers: low-power
+       settings, 20 Hz verification profile, and status-clear I2C failures.
+PASS - The pre-patch HEAD fails the latched-high interrupt recovery test;
+       the modified source passes it (test script --baseline reproduces).
+PASS - Diagnostic build motion-rearm-1 compiled for
+       Seeeduino:nrf52:xiaonRF52840, core 1.1.13, Arduino CLI 1.5.1,
+       TinyGPSPlus 1.0.3 and Adafruit SPIFlash 5.1.1:
+       171016 bytes program storage, 19380 bytes dynamic memory.
+PENDING - Reproduce the reported one-fix-then-stuck failure and verify the
+          corrected behavior on the user's assembled tracker. Host tests do
+          not establish physical interrupt delivery or sensor calibration.
+
 IMPLEMENTED / SOURCE-CONTRACT CHECKS
 
 PASS - Release identifiers are firmware 2.0.0, Android 2.0.0, versionCode 20.

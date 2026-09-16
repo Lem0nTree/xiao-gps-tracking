@@ -112,7 +112,6 @@ static const uint8_t MPU_REG_WHO_AM_I = 0x75;
 // MCU performs no periodic acceleration reads in that state; it wakes only
 // when the latched motion interrupt asserts.  Verification then changes to a
 // 20 Hz data-ready profile and reads acceleration in the MCU loop.
-static const uint32_t SMART_VERIFY_SAMPLE_PERIOD_MS = 50; // 20 Hz
 static const uint32_t SMART_VERIFY_WINDOW_MS = 5000; // confirmationSeconds
 // A nominal 100th sample can arrive just after 5 s because the interrupt and
 // I2C read are asynchronous.  The sample count, not this watchdog, defines
@@ -164,7 +163,17 @@ static const uint16_t SMART_HIGH_THRESHOLD_MG = 80;
 static const uint16_t SMART_BALANCED_THRESHOLD_MG = 160;
 static const uint16_t SMART_LOW_THRESHOLD_MG = 300;
 
-static const uint8_t MPU_MOTION_DURATION_MS = 100;
+// PS-MPU-6000A-00 rev 3.3, section 8.1: the low-power wake profile
+// uses DLPF_CFG=0 and MOT_DUR=1. A 100-count hardware filter must not
+// be treated as a 100 ms debounce in the 5 Hz cycle profile. The five-second
+// software verifier rejects bumps after this deliberately permissive wake.
+static const uint8_t MPU_MOTION_DURATION = 1;
+static const uint8_t MPU_CONFIG_ARMED = 0x00;
+// The rev 3.3 low-power motion flowchart specifies 32 mg/LSB. Older
+// documentation/examples disagree on this scale, so field calibration on the
+// actual module is still required. This is a permissive wake threshold only;
+// the 20 Hz software verifier uses raw acceleration and the exact mg preset.
+static const uint8_t MPU_MOTION_THRESHOLD_MG_PER_LSB = 32;
 static const uint8_t MPU_MOTION_DETECT_CTRL = 0x00;
 static const uint8_t MPU_INT_PIN_CFG_LATCHED_ACTIVE_HIGH = 0x20;
 static const uint8_t MPU_INT_ENABLE_MOTION = 0x40;
@@ -353,6 +362,9 @@ static bool flashSleeping = false;
 // ---------------- MPU6050 / Smart runtime ----------------
 
 volatile bool mpuDataReadyPending = false;
+volatile uint32_t mpuIrqCount = 0;
+static uint32_t mpuMotionEventCount = 0;
+static uint8_t mpuLastInterruptStatus = 0;
 static bool mpuAvailable = false;
 static bool mpuInterruptAttached = false;
 static bool mpuSampleInitialized = false;
@@ -591,7 +603,7 @@ const char* intervalLabel(uint32_t seconds) {
 }
 
 uint32_t secondsUntilGpsWake() {
-  if (gpsPowered) return 0;
+  if (smartRuntimeActive() || gpsPowered) return 0;
   const uint32_t now = millis();
   if (timeReached(now, gpsNextWakeMs)) return 0;
   return (gpsNextWakeMs - now + 999UL) / 1000UL;
@@ -784,6 +796,7 @@ void serviceGpsPowerState() {
 
 void mpuDataReadyISR() {
   // Keep the ISR bounded: all I2C traffic happens in loop().
+  mpuIrqCount++;
   mpuDataReadyPending = true;
 }
 
@@ -822,10 +835,11 @@ bool mpuReadAcceleration(int16_t& x, int16_t& y, int16_t& z) {
 
 uint8_t smartMotionThresholdRegister() {
   uint16_t thresholdMg = smartSensitivityThresholdMg();
-  // The MPU6050 motion-threshold calibration uses 2 mg/LSB and the register
-  // is 8-bit.  Round to the nearest register step; all documented presets fit
-  // without saturation (80 -> 40, 160 -> 80, 300 -> 150).
-  thresholdMg = (uint16_t)((thresholdMg + 1U) / 2U);
+  // Round down for the candidate wake; verification enforces the full preset.
+  // LPA codes: High=2, Balanced=5, Low=9. The former Balanced code of 80
+  // represents 2560 mg under the documented LPA scale, not the intended 160.
+  thresholdMg /= MPU_MOTION_THRESHOLD_MG_PER_LSB;
+  if (thresholdMg == 0) thresholdMg = 1;
   if (thresholdMg > MPU_MOTION_THRESHOLD_REGISTER_MAX) {
     thresholdMg = MPU_MOTION_THRESHOLD_REGISTER_MAX;
   }
@@ -844,7 +858,7 @@ bool mpuReadbackProfile(const uint8_t expected[][2], size_t count) {
   return true;
 }
 
-void clearMpuInterruptPending() {
+bool clearMpuInterruptPending() {
   // Clear the software hint before reading INT_STATUS.  If a new interrupt
   // arrives after this point, the ISR leaves the hint set for the next loop.
   noInterrupts();
@@ -852,7 +866,7 @@ void clearMpuInterruptPending() {
   interrupts();
 
   uint8_t ignoredStatus = 0;
-  (void)mpuReadRegister(MPU_REG_INT_STATUS, ignoredStatus);
+  return mpuReadRegister(MPU_REG_INT_STATUS, ignoredStatus);
 }
 
 bool configureMpuArmed() {
@@ -863,12 +877,12 @@ bool configureMpuArmed() {
   if (!mpuWriteRegister(MPU_REG_PWR_MGMT_1, MPU_PWR_MGMT_1_VERIFY) ||
       !mpuWriteRegister(MPU_REG_INT_ENABLE, 0x00) ||
       !mpuWriteRegister(MPU_REG_PWR_MGMT_2, MPU_PWR_MGMT_2_VERIFY) ||
-      !mpuWriteRegister(MPU_REG_CONFIG, 0x03) ||
+      !mpuWriteRegister(MPU_REG_CONFIG, MPU_CONFIG_ARMED) ||
       !mpuWriteRegister(MPU_REG_SMPLRT_DIV, 49) ||
       !mpuWriteRegister(MPU_REG_GYRO_CONFIG, 0x00) ||
       !mpuWriteRegister(MPU_REG_ACCEL_CONFIG, MPU_ACCEL_CONFIG_VERIFY) ||
       !mpuWriteRegister(MPU_REG_MOT_THR, motionThreshold) ||
-      !mpuWriteRegister(MPU_REG_MOT_DUR, MPU_MOTION_DURATION_MS) ||
+      !mpuWriteRegister(MPU_REG_MOT_DUR, MPU_MOTION_DURATION) ||
       !mpuWriteRegister(MPU_REG_MOT_DETECT_CTRL, MPU_MOTION_DETECT_CTRL) ||
       !mpuWriteRegister(MPU_REG_INT_PIN_CFG,
                         MPU_INT_PIN_CFG_LATCHED_ACTIVE_HIGH)) {
@@ -891,12 +905,12 @@ bool configureMpuArmed() {
   const uint8_t expectedRegisters[][2] = {
     { MPU_REG_PWR_MGMT_1, MPU_PWR_MGMT_1_ARMED },
     { MPU_REG_PWR_MGMT_2, MPU_PWR_MGMT_2_ARMED },
-    { MPU_REG_CONFIG, 0x03 },
+    { MPU_REG_CONFIG, MPU_CONFIG_ARMED },
     { MPU_REG_SMPLRT_DIV, 49 },
     { MPU_REG_GYRO_CONFIG, 0x00 },
     { MPU_REG_ACCEL_CONFIG, MPU_ACCEL_CONFIG_ARMED },
     { MPU_REG_MOT_THR, motionThreshold },
-    { MPU_REG_MOT_DUR, MPU_MOTION_DURATION_MS },
+    { MPU_REG_MOT_DUR, MPU_MOTION_DURATION },
     { MPU_REG_MOT_DETECT_CTRL, MPU_MOTION_DETECT_CTRL },
     { MPU_REG_INT_PIN_CFG, MPU_INT_PIN_CFG_LATCHED_ACTIVE_HIGH },
     { MPU_REG_INT_ENABLE, MPU_INT_ENABLE_MOTION }
@@ -906,8 +920,7 @@ bool configureMpuArmed() {
     return false;
   }
 
-  clearMpuInterruptPending();
-  return true;
+  return clearMpuInterruptPending();
 }
 
 bool configureMpuVerification() {
@@ -923,7 +936,7 @@ bool configureMpuVerification() {
       !mpuWriteRegister(MPU_REG_GYRO_CONFIG, 0x00) ||
       !mpuWriteRegister(MPU_REG_ACCEL_CONFIG, MPU_ACCEL_CONFIG_VERIFY) ||
       !mpuWriteRegister(MPU_REG_MOT_THR, motionThreshold) ||
-      !mpuWriteRegister(MPU_REG_MOT_DUR, MPU_MOTION_DURATION_MS) ||
+      !mpuWriteRegister(MPU_REG_MOT_DUR, MPU_MOTION_DURATION) ||
       !mpuWriteRegister(MPU_REG_MOT_DETECT_CTRL, MPU_MOTION_DETECT_CTRL) ||
       !mpuWriteRegister(MPU_REG_INT_PIN_CFG,
                         MPU_INT_PIN_CFG_LATCHED_ACTIVE_HIGH) ||
@@ -939,7 +952,7 @@ bool configureMpuVerification() {
     { MPU_REG_GYRO_CONFIG, 0x00 },
     { MPU_REG_ACCEL_CONFIG, MPU_ACCEL_CONFIG_VERIFY },
     { MPU_REG_MOT_THR, motionThreshold },
-    { MPU_REG_MOT_DUR, MPU_MOTION_DURATION_MS },
+    { MPU_REG_MOT_DUR, MPU_MOTION_DURATION },
     { MPU_REG_MOT_DETECT_CTRL, MPU_MOTION_DETECT_CTRL },
     { MPU_REG_INT_PIN_CFG, MPU_INT_PIN_CFG_LATCHED_ACTIVE_HIGH },
     { MPU_REG_INT_ENABLE, MPU_INT_ENABLE_DATA_READY }
@@ -949,8 +962,7 @@ bool configureMpuVerification() {
     return false;
   }
 
-  clearMpuInterruptPending();
-  return true;
+  return clearMpuInterruptPending();
 }
 
 bool initMpu6050() {
@@ -996,7 +1008,12 @@ bool initMpu6050() {
   }
 
   mpuDataReadyPending = false;
-  attachInterrupt(interruptNumber, mpuDataReadyISR, RISING);
+  // Seeed non-mbed core returns a channel mask, or zero on failure.
+  if (attachInterrupt(interruptNumber, mpuDataReadyISR, RISING) == 0) {
+    (void)mpuWriteRegister(MPU_REG_INT_ENABLE, 0x00);
+    DBG_PRINTLN("MPU6050 D2 interrupt attachment failed; Smart fallback enabled.");
+    return false;
+  }
   mpuInterruptAttached = true;
 
   mpuAvailable = true;
@@ -1461,6 +1478,7 @@ void applyTrackingRuntime() {
     return;
   }
 
+  gpsNextWakeMs = 0; // Retire the old Interval deadline; Smart owns its timers.
   smartState = SMART_ARMED;
   smartStateSinceMs = now;
   smartStartupProbePending = !cas12ProbeAttempted && cas12State == CAS12_UNKNOWN;
@@ -1993,7 +2011,9 @@ void disableSmartMpuRuntime() {
   DBG_PRINTLN("MPU6050 runtime failure; using Interval fallback this boot.");
 }
 
-bool rejectMpuVerification() {
+bool rejectMpuVerification(const char* reason) {
+  DBG_PRINTF("Smart verification rejected: %s samples=%u active=%u peakMg=%u\n",
+             reason, smartVerifySamples, smartVerifyActiveSamples, smartVerifyPeakMg);
   smartMotionDetected = false;
   smartVerifySamples = 0;
   smartVerifyActiveSamples = 0;
@@ -2024,7 +2044,7 @@ void serviceMpu() {
         smartVerifyLastActiveMs == 0 ||
         elapsedMs(now, smartVerifyLastActiveMs, SMART_VERIFY_MAX_QUIET_GAP_MS);
     if (verificationWatchdogExpired || quietGapExceeded) {
-      rejectMpuVerification();
+      rejectMpuVerification(verificationWatchdogExpired ? "sample timeout" : "quiet gap");
       return;
     }
   }
@@ -2035,16 +2055,19 @@ void serviceMpu() {
   mpuDataReadyPending = false;
   interrupts();
 
-  // Armed/ACQUIRING/COOLDOWN profiles are interrupt-only.  The MCU does not
-  // poll acceleration in the low-power state; one I2C status read is made only
-  // after the latched INT pin has woken the loop.
-  if (!interruptPending) return;
+  // Recover an already-latched HIGH even if its rising edge was missed during
+  // profile changes/IRQ attachment. Without this, no new rising edge can
+  // arrive until INT_STATUS is read, leaving ARMED stuck indefinitely.
+  // This checks a GPIO only; there is no periodic I2C/acceleration polling.
+  if (!interruptPending && digitalRead(MPU_INT_PIN) != HIGH) return;
 
   uint8_t interruptStatus = 0;
   if (!mpuReadRegister(MPU_REG_INT_STATUS, interruptStatus)) {
     disableSmartMpuRuntime();
     return;
   }
+  mpuLastInterruptStatus = interruptStatus;
+  if ((interruptStatus & MPU_INT_STATUS_MOTION) != 0) mpuMotionEventCount++;
 
   if (smartState == SMART_ARMED || smartState == SMART_TRACKING) {
     if ((interruptStatus & MPU_INT_STATUS_MOTION) == 0) return;
@@ -2089,9 +2112,10 @@ void serviceMpu() {
 
   // Verification is driven by the MPU data-ready source configured at 20 Hz;
   // stale/spurious motion-only status does not cause an acceleration read.
-  if ((interruptStatus & MPU_INT_STATUS_DATA_READY) == 0 ||
-      (mpuLastSampleMs != 0 &&
-       !elapsedMs(now, mpuLastSampleMs, SMART_VERIFY_SAMPLE_PERIOD_MS))) {
+  // DATA_READY is the hardware sample clock. A second 50 ms software gate
+  // discards real samples when loop servicing jitter makes two reads 49 ms
+  // apart, causing the 100-sample watchdog to reject continuous movement.
+  if ((interruptStatus & MPU_INT_STATUS_DATA_READY) == 0) {
     return;
   }
 
@@ -2100,7 +2124,7 @@ void serviceMpu() {
   // 100th interrupt that arrives just after 5000 ms remains eligible.
   if (smartVerifySamples < SMART_VERIFY_TOTAL_SAMPLES &&
       elapsedMs(now, smartVerifyStartedMs, SMART_VERIFY_WATCHDOG_MS)) {
-    rejectMpuVerification();
+    rejectMpuVerification("sample timeout");
     return;
   }
 
@@ -2176,7 +2200,7 @@ void serviceMpu() {
       elapsedMs(now, smartVerifyStartedMs, SMART_VERIFY_WATCHDOG_MS) &&
       smartVerifySamples < SMART_VERIFY_TOTAL_SAMPLES;
   if (quietGapExceeded || verificationWatchdogExpiredBeforeAllSamples) {
-    rejectMpuVerification();
+    rejectMpuVerification(verificationWatchdogExpiredBeforeAllSamples ? "sample timeout" : "quiet gap");
     return;
   }
 
@@ -2185,6 +2209,9 @@ void serviceMpu() {
   if (verificationComplete) {
     const bool accepted =
         smartVerifyActiveSamples >= SMART_VERIFY_REQUIRED_ACTIVE_SAMPLES;
+    DBG_PRINTF("Smart verification %s: samples=%u active=%u peakMg=%u\n",
+               accepted ? "accepted" : "rejected", smartVerifySamples,
+               smartVerifyActiveSamples, smartVerifyPeakMg);
     smartVerifySamples = 0;
     smartVerifyActiveSamples = 0;
     smartVerifyLastActiveMs = 0;
@@ -2265,9 +2292,18 @@ void serviceSmartState() {
       smartMotionDetected = continuedMotion;
       smartLastMotionMs = continuedMotion ? now : 0;
       smartCooldownObservationOpen = false;
+      if (continuedMotion && !smartRetryAfterCooldown) {
+        // Consume the movement decision now. TRACKING used to discard the
+        // displacement baseline and demand a second MPU verification.
+        startSmartAcquisition();
+        break;
+      }
       if (gpsPowered || gpsStandby || gpsStandbyPending) gpsPowerOff();
-      setSmartState(continuedMotion && !smartRetryAfterCooldown
-          ? SMART_TRACKING : SMART_ARMED);
+      if (!configureMpuArmed()) {
+        disableSmartMpuRuntime();
+        break;
+      }
+      setSmartState(SMART_ARMED);
       if (smartRetryAfterCooldown) {
         // A failed fix is eligible for another attempt only after the full
         // cooldown and a fresh motion verification.  Keep the retry marker
@@ -2432,10 +2468,30 @@ void serviceGpsDiagnostics() {
   firstGpsDiag = false;
   lastGpsDiagMs = now;
 
+  DBG_PRINTF("TRACKING DIAG saved=%s runtime=%s fallback=%u\n",
+             trackingModeLabel(trackingMode),
+             smartRuntimeActive() ? "Smart" : "Interval",
+             runtimeIntervalFallback ? 1U : 0U);
+  if (trackingMode == TRACKING_SMART) {
+    DBG_PRINTF("SMART DIAG state=%s cooldown=%us mpu=%u irqAttached=%u "
+               "intPin=%u irqCount=%lu motionEvents=%lu intStatus=0x%02X "
+               "samples=%u active=%u\n",
+               smartStateLabel(smartState), smartCooldownRemainingSeconds(now),
+               mpuAvailable ? 1U : 0U, mpuInterruptAttached ? 1U : 0U,
+               (unsigned)digitalRead(MPU_INT_PIN), (unsigned long)mpuIrqCount,
+               (unsigned long)mpuMotionEventCount, mpuLastInterruptStatus,
+               smartVerifySamples, smartVerifyActiveSamples);
+  }
+
   if (!gpsPowered) {
-    DBG_PRINTF("GPS DIAG uart=INACTIVE supply=ALWAYS_ON nextWake=%lus stored=%lu\n",
-               (unsigned long)secondsUntilGpsWake(),
-               (unsigned long)storedCount);
+    if (smartRuntimeActive()) {
+      DBG_PRINTF("GPS DIAG uart=INACTIVE supply=ALWAYS_ON stored=%lu\n",
+                 (unsigned long)storedCount);
+    } else {
+      DBG_PRINTF("GPS DIAG uart=INACTIVE supply=ALWAYS_ON nextWake=%lus stored=%lu\n",
+                 (unsigned long)secondsUntilGpsWake(),
+                 (unsigned long)storedCount);
+    }
     return;
   }
 
@@ -2481,10 +2537,11 @@ void serviceGpsDiagnostics() {
         "GPS STATUS: position is valid but UTC date/time is not valid yet; not logging.");
   } else {
     DBG_PRINTF(
-        "GPS READY: %.7f, %.7f -- point eligible for %lus logger.\n",
+        "GPS LOCATION: %.7f, %.7f ageMs=%lu -- logging controlled by %s state.\n",
         gps.location.lat(),
         gps.location.lng(),
-        (unsigned long)logIntervalSeconds);
+        (unsigned long)age,
+        smartRuntimeActive() ? "Smart" : "Interval");
   }
 }
 
@@ -3068,6 +3125,7 @@ void setup() {
     DBG_PRINTLN0();
     DBG_PRINTLN("XIAO GPS Logger starting");
     DBG_PRINTF("FW VERSION: %s\n", FW_VERSION);
+    DBG_PRINTLN("FW diagnostic build: motion-rearm-1");
     DBG_PRINTLN("USB Serial Monitor baud: 115200");
     DBG_PRINTF("GPS Serial1 baud: %lu\n", (unsigned long)GPS_BAUD);
   }

@@ -49,9 +49,11 @@ class MainActivity : AppCompatActivity(), BleManager.Listener {
     private lateinit var connectButton: Button
     private lateinit var downloadButton: Button
     private lateinit var intervalButton: Button
+    private lateinit var intervalControls: View
     private lateinit var intervalSummaryText: TextView
     private lateinit var wakeModeButton: Button
     private lateinit var sensitivityButton: Button
+    private lateinit var sensitivityControls: View
     private lateinit var smartDetailsText: TextView
     private lateinit var moreButton: Button
     private lateinit var progressBar: ProgressBar
@@ -210,9 +212,11 @@ class MainActivity : AppCompatActivity(), BleManager.Listener {
         connectButton = findViewById(R.id.connectButton)
         downloadButton = findViewById(R.id.downloadButton)
         intervalButton = findViewById(R.id.intervalButton)
+        intervalControls = findViewById(R.id.intervalControls)
         intervalSummaryText = findViewById(R.id.intervalSummaryText)
         wakeModeButton = findViewById(R.id.wakeModeButton)
         sensitivityButton = findViewById(R.id.sensitivityButton)
+        sensitivityControls = findViewById(R.id.sensitivityControls)
         smartDetailsText = findViewById(R.id.smartDetailsText)
         moreButton = findViewById(R.id.moreButton)
         progressBar = findViewById(R.id.progressBar)
@@ -393,6 +397,15 @@ class MainActivity : AppCompatActivity(), BleManager.Listener {
         val actualMode = smartInfo?.mode ?: selectedWakeMode
         val actualSensitivity = smartInfo?.sensitivity ?: selectedSensitivity
         val busy = pendingSmartConfig != null
+        // Show mode-specific settings only after the tracker has reported its mode.
+        // Legacy firmware has Interval only; Smart selection never changes that saved interval.
+        val modeKnown = ble.isReady && info != null &&
+            (!supportsSmartMotion(info) || smartConfigurationUnsupported || smartInfo != null)
+        val smartSelected = modeKnown && supported && actualMode == WakeMode.SMART
+        val intervalSelected = modeKnown &&
+            (!supported || actualMode == WakeMode.INTERVAL)
+        intervalControls.visibility = if (intervalSelected) View.VISIBLE else View.GONE
+        sensitivityControls.visibility = if (smartSelected) View.VISIBLE else View.GONE
 
         wakeModeButton.text = when {
             !ble.isReady -> "Connect"
@@ -422,13 +435,10 @@ class MainActivity : AppCompatActivity(), BleManager.Listener {
             else -> "Interval mode • Smart Motion is available on this tracker"
         }
 
-        val intervalEditingAllowed = ble.isReady && supportsIntervalConfiguration(info) &&
-            !(supportsSmartMotion(info) && smartInfo == null && !smartConfigurationUnsupported) &&
-            (actualMode != WakeMode.SMART || smartConfigurationUnsupported)
+        val intervalEditingAllowed = intervalSelected && supportsIntervalConfiguration(info)
         intervalButton.isEnabled = intervalEditingAllowed && !busy
-        if (info != null && actualMode == WakeMode.SMART) {
-            intervalSummaryText.text =
-                "${intervalSummary(info.logIntervalSeconds)} • saved interval (used in Interval mode)"
+        if (info != null) {
+            intervalSummaryText.text = intervalSummary(info.logIntervalSeconds)
         }
     }
 

@@ -113,6 +113,49 @@ critical register read-back, and arms its interrupt. If that initialization or
 the interrupt fails, the saved Smart selection is preserved but that boot runs
 Interval behavior and reports `runtimeIntervalFallback`.
 
+### Motion rearm diagnostic build
+
+The startup banner `FW diagnostic build: motion-rearm-1` identifies the
+post-v2.0 debugging patch. Serial output now includes saved mode, actual runtime
+mode, fallback, Smart state, the real Smart cooldown, D2 level, interrupt count,
+motion-event count, and verification sample counts/rejection reasons. An
+Interval `nextWake` countdown is printed only when Interval actually runs.
+The legacy INFO wake countdown is zero while Smart runs; use Smart Info for
+its cooldown. Android's displayed state is the last BLE read-back, not a
+continuous live indication.
+
+The patch recovers a latched-high MPU interrupt even when the rising edge was
+missed, checks the Seeed core's interrupt attachment result, checks interrupt
+clearing failures, and rearms the sensor on return to ARMED. Continued movement
+at a successful fix's cooldown expiry starts the next acquisition directly.
+Data-ready interrupts supply verification timing; software no longer discards
+fresh samples just because readout jitter makes successive reads less than
+50 ms apart.
+
+The armed profile uses `DLPF_CFG=0`, `MOT_DUR=1` per the low-power motion
+configuration flow in the [InvenSense product specification, section 8.1](https://hw101.tbs1.de/mpu6050/doc/mpu6050.pdf).
+This replaces the initial plan's 100-count hardware-duration setting: that
+setting is not validated as a 100 ms debounce in 5 Hz cycle mode. The
+five-second software confirmation remains the sustained-movement filter.
+The candidate threshold follows that flowchart's 32 mg/LSB scale, rounding
+down to codes 2/5/9 for High/Balanced/Low. The previous Balanced code of 80
+would correspond to 2560 mg at that scale. Documentation revisions disagree
+on motion-threshold units; actual module calibration is still pending. The
+software verifier retains the exact 80/160/300 mg presets regardless of the
+hardware wake threshold.
+
+Run the focused host regression checks from the repository root:
+
+```sh
+python3 firmware/tests/test_motion_runtime.py
+```
+
+These compile the actual C-compatible scheduler/verifier function bodies with
+GCC and fake peripherals/clock. They cover repeated cooldowns, motion after
+rearming, missed interrupt edges, jittered 20 Hz samples, quiet rejection,
+failure retry, rollover, and Interval scheduling. They do not validate the
+physical MPU, GPS, BLE stack, or flash writes.
+
 ## GPS activity and CAS12 standby
 
 The firmware keeps these states distinct:

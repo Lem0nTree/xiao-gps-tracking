@@ -104,6 +104,9 @@ change the owner without erasing the route history or saved wake settings.
 
 The v2 Android app (`2.0.0`, versionCode `20`) shows tracker status, the
 Interval/Smart selector, Smart sensitivity, map, and time-based route timeline.
+Choose the GPS mode first: Interval shows the logging interval controls, while
+Smart shows motion sensitivity and hides the interval controls. The saved
+interval is preserved and shown again when returning to Interval mode.
 It syncs the local log over BLE and exports tracks as GPX or CSV without sending
 them to a cloud service. It also reports runtime fallback and receiver standby
 capability when the firmware provides those statuses.

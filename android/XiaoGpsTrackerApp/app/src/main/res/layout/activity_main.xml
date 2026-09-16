@@ -110,12 +110,32 @@
             android:textColor="@color/text_tertiary"
             android:textSize="11sp" />
 
-        <LinearLayout
+        <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="11dp"
+            android:text="GPS MODE"
+            android:textColor="@color/text_tertiary"
+            android:textSize="10sp"
+            android:textStyle="bold" />
+
+        <Button
+            android:id="@+id/wakeModeButton"
+            style="@style/Widget.Xiao.SecondaryButton"
+            android:layout_width="match_parent"
+            android:layout_height="36dp"
+            android:layout_marginTop="2dp"
+            android:enabled="false"
+            android:text="Connect" />
+
+        <LinearLayout
+            android:id="@+id/intervalControls"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="9dp"
             android:gravity="center_vertical"
-            android:orientation="horizontal">
+            android:orientation="horizontal"
+            android:visibility="gone">
 
             <LinearLayout
                 android:layout_width="0dp"
@@ -126,7 +146,7 @@
                 <TextView
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:text="GPS WAKE"
+                    android:text="LOGGING INTERVAL"
                     android:textColor="@color/text_tertiary"
                     android:textSize="10sp"
                     android:textStyle="bold" />
@@ -152,60 +172,29 @@
         </LinearLayout>
 
         <LinearLayout
+            android:id="@+id/sensitivityControls"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="9dp"
-            android:gravity="center_vertical"
-            android:orientation="horizontal">
+            android:orientation="vertical"
+            android:visibility="gone">
 
-            <LinearLayout
-                android:layout_width="0dp"
+            <TextView
+                android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:orientation="vertical">
+                android:text="MOTION SENSITIVITY"
+                android:textColor="@color/text_tertiary"
+                android:textSize="10sp"
+                android:textStyle="bold" />
 
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="WAKE MODE"
-                    android:textColor="@color/text_tertiary"
-                    android:textSize="10sp"
-                    android:textStyle="bold" />
-
-                <Button
-                    android:id="@+id/wakeModeButton"
-                    style="@style/Widget.Xiao.SecondaryButton"
-                    android:layout_width="match_parent"
-                    android:layout_height="36dp"
-                    android:layout_marginTop="2dp"
-                    android:enabled="false"
-                    android:text="Connect" />
-            </LinearLayout>
-
-            <LinearLayout
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_marginStart="10dp"
-                android:layout_weight="1"
-                android:orientation="vertical">
-
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="MOTION SENSITIVITY"
-                    android:textColor="@color/text_tertiary"
-                    android:textSize="10sp"
-                    android:textStyle="bold" />
-
-                <Button
-                    android:id="@+id/sensitivityButton"
-                    style="@style/Widget.Xiao.SecondaryButton"
-                    android:layout_width="match_parent"
-                    android:layout_height="36dp"
-                    android:layout_marginTop="2dp"
-                    android:enabled="false"
-                    android:text="Unavailable" />
-            </LinearLayout>
+            <Button
+                android:id="@+id/sensitivityButton"
+                style="@style/Widget.Xiao.SecondaryButton"
+                android:layout_width="match_parent"
+                android:layout_height="36dp"
+                android:layout_marginTop="2dp"
+                android:enabled="false"
+                android:text="Unavailable" />
         </LinearLayout>
 
         <TextView
