@@ -4,6 +4,38 @@ This record separates software/source checks from tests that require the
 assembled hardware. It contains no measured current, runtime, or calibration
 result.
 
+FLASH STARTUP RECOVERY 2.1.2 (2026-09-17)
+
+OBSERVED - User's serial trace repeats "FATAL: P25Q16H QSPI flash not detected".
+           This locates the reported failure before metadata loading and BLE.
+           The metadata-migration simulation below is a separate defect, not
+           the startup stage failing in this trace.
+PASS - Source/dependency review: firmware puts the flash in deep power-down;
+       Adafruit SPIFlash 5.1.1 attempts JEDEC detection without first waking
+       it. The RAM sleeping flag resets independently of externally powered
+       flash, and Seeed core QSPI activation can time out while it sleeps.
+PASS - Target build with Seeed nRF52 1.1.13, Seeeduino:nrf52:xiaonRF52840:
+       172776 bytes program, 19380 bytes RAM.
+PASS - Existing motion runtime and tracking profile host suites after patch.
+PASS - test_flash_startup.py compiles the actual startup functions against a
+       GPIO/flash model: original detection fails asleep; patched warm resets,
+       cold boot and repeated resets pass, and absent flash still fails.
+       Checks mode-0 0xAB framing, pin directions, CS byte boundary and wake
+       delay before QSPI ownership. No erase/write API is available to the fake.
+PASS - Independent review of wake timing, board pins and QSPI handover.
+PENDING - On-device recovery following USB upload, with the battery connected.
+          No physical tracker is attached to this build host. The trace does
+          not by itself distinguish a sleeping chip from hardware/board issues.
+
+ANDROID APK 2.1.1 BUILD (2026-09-16)
+
+PASS - Installed a local headless ARM64 toolchain and completed a clean Gradle
+       assembleDebug plus testDebugUnitTest: 44 tasks, all 11 tests passed.
+       Uses API 36, Build Tools 35.0.0, OpenJDK 21, and AGP-matched Google AAPT2
+       through QEMU user mode (Debian's ARM64 AAPT2 cannot read API 36 resources).
+PASS - APK signature verified by apksigner; packaged version 2.1.1/code 22.
+       This supersedes the earlier missing-SDK build blockers below.
+
 BLUETOOTH STARTUP / SCAN FIX 2.1.1 (2026-09-16)
 
 PASS - Reproduced against firmware 2.1.0 in the fake-flash host harness:

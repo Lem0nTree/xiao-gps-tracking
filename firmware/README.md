@@ -331,7 +331,25 @@ successful start. With USB connected, open Serial Monitor at 115200 baud and
 restart the tracker. A `FATAL:` line identifies a startup stage that failed;
 these lines repeat every five seconds. In normal operation, `BLE DIAG` reports
 `advertising=0/1` and `connected=0/1` every five seconds alongside GPS status.
-The startup banner is `ble-startup-1`. Pairing PINs are not logged.
+Firmware 2.1.2 uses startup banner `flash-wake-1`. Pairing PINs are not logged.
+
+An MCU reset or USB firmware upload does not necessarily remove power from
+the onboard flash. The chip can remain in deep power-down while the sketch's
+RAM state resets. Firmware 2.1.2 sends `0xAB` (Release from Deep Power-down)
+using GPIO SPI **before** initializing QSPI, then waits 50 microseconds before
+flash detection. This also avoids initializing the QSPI controller against an
+unresponsive sleeping chip. The wake operation does not erase stored data.
+See the [Puya P25Q16H datasheet](https://www.puyasemi.com/download_path/%E6%95%B0%E6%8D%AE%E6%89%8B%E5%86%8C/Flash%20%E8%8A%AF%E7%89%87/P25Q16H_Datasheet_V2.1.pdf),
+pages 44–46 (`tRES1` maximum 8 microseconds).
+
+For an enclosed tracker reporting `FATAL: P25Q16H QSPI flash not detected`,
+upload firmware 2.1.2 normally over USB; battery removal and access to the
+reset button are not required for this recovery path. Android 2.1.1 remains
+compatible. Successful startup prints `QSPI JEDEC=0x856015` for P25Q16H and
+then `Advertising as XIAO-GPS`. If initialization still fails, copy the new
+repeating `FATAL: QSPI flash not detected after wake` line, including its
+`JEDEC` and `read` fields. A completed ID transfer alone does not prove that
+a flash chip responded.
 
 The Android 2.1.1 scanner preserves scan failures and connection/disconnection
 messages after discovery; its 12-second “not found” timeout applies only to the

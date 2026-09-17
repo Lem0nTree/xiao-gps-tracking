@@ -1,3 +1,15 @@
+# Firmware 2.1.2 — Wake flash before startup detection
+
+- Wake the onboard P25Q16H with a GPIO SPI `0xAB` command before initializing
+  QSPI. Its deep sleep can survive a CPU reset or USB firmware upload while
+  the enclosed tracker stays battery-powered; previously this could stop
+  startup with “P25Q16H QSPI flash not detected” before BLE advertising.
+- Wait 50 microseconds after the wake command, then initialize flash normally.
+  The wake sequence does not erase or write GPS records, settings, or ownership.
+- If detection still fails, the repeating fatal message includes the raw JEDEC
+  ID and ID-transfer result for diagnosis.
+- Android remains 2.1.1 (versionCode 22); no app update is required.
+
 # 2.1.1 — Bluetooth startup and scan recovery
 
 - Valid older tracker settings now load without a mandatory flash erase/write

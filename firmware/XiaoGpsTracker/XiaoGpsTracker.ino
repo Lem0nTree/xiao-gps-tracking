@@ -50,7 +50,7 @@
 // ---------------- User settings ----------------
 
 static const char BLE_DEVICE_NAME[] = "XIAO-GPS";
-static const char FW_VERSION[] = "2.1.1";
+static const char FW_VERSION[] = "2.1.2";
 static const char BLE_PAIRING_PIN[] = "482731"; // CHANGE THIS, exactly 6 digits
 static const uint32_t DEFAULT_LOG_INTERVAL_SECONDS = 1800; // 30 min
 static const uint32_t GPS_BAUD = 9600;
@@ -637,6 +637,43 @@ uint32_t secondsUntilGpsWake() {
   const uint32_t now = millis();
   if (timeReached(now, gpsNextWakeMs)) return 0;
   return (gpsNextWakeMs - now + 999UL) / 1000UL;
+}
+
+void wakeFlashBeforeInit() {
+  // A CPU reset/USB upload does not remove power from the external flash.
+  // Its deep-power-down state can therefore outlive flashSleeping in RAM.
+  // Send Release from Deep Power-down as mode-0 SPI before enabling QSPI:
+  // QSPI activation itself can time out against a sleeping device.
+  digitalWrite(PIN_QSPI_CS, HIGH);
+  pinMode(PIN_QSPI_CS, OUTPUT);
+  digitalWrite(PIN_QSPI_SCK, LOW);
+  pinMode(PIN_QSPI_SCK, OUTPUT);
+  digitalWrite(PIN_QSPI_IO0, LOW);
+  pinMode(PIN_QSPI_IO0, OUTPUT);
+  pinMode(PIN_QSPI_IO1, INPUT);
+  digitalWrite(PIN_QSPI_IO2, HIGH); // WP# inactive
+  pinMode(PIN_QSPI_IO2, OUTPUT);
+  digitalWrite(PIN_QSPI_IO3, HIGH); // HOLD# inactive
+  pinMode(PIN_QSPI_IO3, OUTPUT);
+  delayMicroseconds(1);
+
+  digitalWrite(PIN_QSPI_CS, LOW);
+  for (uint8_t bit = 0x80; bit != 0; bit >>= 1) {
+    digitalWrite(PIN_QSPI_IO0, (0xAB & bit) ? HIGH : LOW);
+    delayMicroseconds(1);
+    digitalWrite(PIN_QSPI_SCK, HIGH);
+    delayMicroseconds(1);
+    digitalWrite(PIN_QSPI_SCK, LOW);
+  }
+  digitalWrite(PIN_QSPI_CS, HIGH);
+  // P25Q16H tRES1 is 8 us maximum; allow margin before JEDEC detection.
+  delayMicroseconds(50);
+  flashSleeping = false;
+}
+
+bool initializeFlash() {
+  wakeFlashBeforeInit();
+  return flash.begin(flashDevices, 1);
 }
 
 void flashWake() {
@@ -2827,7 +2864,7 @@ void sendInfo() {
   putU16(payload + 60, 0); // reserved battery mV
   payload[62] = 2;
   payload[63] = 1;
-  payload[64] = 1;
+  payload[64] = 2;
 
   sendPacket(RSP_INFO, payload, sizeof(payload));
 }
@@ -3257,7 +3294,7 @@ void setup() {
     DBG_PRINTLN0();
     DBG_PRINTLN("XIAO GPS Logger starting");
     DBG_PRINTF("FW VERSION: %s\n", FW_VERSION);
-    DBG_PRINTLN("FW diagnostic build: ble-startup-1");
+    DBG_PRINTLN("FW diagnostic build: flash-wake-1");
     DBG_PRINTLN("USB Serial Monitor baud: 115200");
     DBG_PRINTF("GPS Serial1 baud: %lu\n", (unsigned long)GPS_BAUD);
   }
@@ -3280,8 +3317,14 @@ void setup() {
   digitalWrite(LED_BLUE, HIGH);
 #endif
 
-  if (!flash.begin(flashDevices, 1)) {
-    haltStartup("FATAL: P25Q16H QSPI flash not detected");
+  if (!initializeFlash()) {
+    uint8_t jedec[3] = {0, 0, 0};
+    const bool idRead = flashTransport.readCommand(0x9F, jedec, sizeof(jedec));
+    char message[112];
+    snprintf(message, sizeof(message),
+             "FATAL: QSPI flash not detected after wake (JEDEC=%02X%02X%02X read=%u)",
+             (unsigned)jedec[0], (unsigned)jedec[1], (unsigned)jedec[2], idRead ? 1U : 0U);
+    haltStartup(message);
   }
 
   DBG_PRINTF("QSPI JEDEC=0x%06lX size=%lu bytes\n",
