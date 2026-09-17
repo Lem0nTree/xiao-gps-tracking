@@ -41,7 +41,7 @@ Smart Motion now has two tracking profiles:
 
 - **Continuous** (default): the existing behavior, with a 120-second cooldown
   after a fix and another acquisition if movement continues.
-- **Point-to-point**: capture one point after confirmed movement starts, then
+- **Start & Stop** (Point-to-point): capture one point after confirmed movement starts, then
   one after **10 minutes without accelerometer activity**. Any new acceleration
   restarts the stop timer. No intermediate points are recorded. If movement
   resumes while acquiring the arrival point, that attempt is cancelled and a
@@ -117,7 +117,7 @@ change the owner without erasing the route history or saved wake settings.
 
 ## Android companion app
 
-The Android app (`2.1.1`, versionCode `22`) shows tracker status, the
+The Android app (`2.1.2`, versionCode `23`) shows tracker status, the
 Interval/Smart selector, tracking profiles, map, and time-based route timeline.
 Choose the GPS mode first: Interval shows the logging interval controls, while
 Smart shows tracking profiles and hides the interval controls. The saved

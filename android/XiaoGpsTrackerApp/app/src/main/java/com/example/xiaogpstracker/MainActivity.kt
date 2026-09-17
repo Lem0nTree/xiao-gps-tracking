@@ -453,7 +453,7 @@ class MainActivity : AppCompatActivity(), BleManager.Listener {
                     append(" GPS wake delay depends on standby capability.")
                 }
                 if (!smartInfo!!.supportsProfiles) {
-                    append(" Point-to-point requires a tracker firmware update.")
+                    append(" Start & Stop requires a tracker firmware update.")
                 }
             }
             else -> "Saves GPS points on your selected schedule."
@@ -493,7 +493,7 @@ class MainActivity : AppCompatActivity(), BleManager.Listener {
 
         val supportsProfiles = smartInfo?.supportsProfiles == true
         if (profile == TrackingProfile.POINT_TO_POINT && !supportsProfiles) {
-            val message = "Point-to-point requires a tracker firmware update; Continuous remains available"
+            val message = "Start & Stop requires a tracker firmware update; Continuous remains available"
             setActivity(message)
             toast(message)
             return
@@ -580,14 +580,9 @@ class MainActivity : AppCompatActivity(), BleManager.Listener {
             return
         }
 
-        val pointLabel = if (info.supportsProfiles) {
-            TrackingProfile.POINT_TO_POINT.label
-        } else {
-            "${TrackingProfile.POINT_TO_POINT.label} (firmware update required)"
-        }
         val choices = arrayOf(
-            TrackingProfile.CONTINUOUS.label + "\nMotion-triggered fixes ~every 2 min while moving",
-            pointLabel + "\nDeparture + after 10 min without motion"
+            TrackingProfile.CONTINUOUS.label,
+            TrackingProfile.POINT_TO_POINT.label
         )
         val checked = when (info.profile) {
             TrackingProfile.CONTINUOUS -> 0
@@ -603,7 +598,7 @@ class MainActivity : AppCompatActivity(), BleManager.Listener {
                     else -> TrackingProfile.UNKNOWN
                 }
                 if (profile == TrackingProfile.POINT_TO_POINT && !info.supportsProfiles) {
-                    val message = "Point-to-point requires a tracker firmware update; Continuous remains available"
+                    val message = "Start & Stop requires a tracker firmware update; Continuous remains available"
                     setActivity(message)
                     toast(message)
                     return@setSingleChoiceItems

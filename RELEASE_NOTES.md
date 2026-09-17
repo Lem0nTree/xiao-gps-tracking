@@ -1,3 +1,9 @@
+# Android 2.1.2 — Shorter tracking profile labels
+
+- Profile choices show only “Continuous” and “Start & Stop”.
+- Descriptions remain below the selector; Start & Stop omits the GPS timeout,
+  satellite-count and HDOP sentence. Recording behavior is unchanged.
+
 # Firmware 2.1.2 — Wake flash before startup detection
 
 - Wake the onboard P25Q16H with a GPIO SPI `0xAB` command before initializing

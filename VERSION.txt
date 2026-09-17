@@ -1,7 +1,7 @@
 XIAO GPS Tracker Smart Motion
 Firmware: 2.1.2
-Android app: 2.1.1
-Android versionCode: 22
+Android app: 2.1.2
+Android versionCode: 23
 Wake modes: Interval (0), Smart motion (1)
 Protocol INFO: 65-byte layout unchanged
 Protocol commands: CMD_GET_SMART_INFO 0x06; CMD_SET_SMART_CONFIG 0x07

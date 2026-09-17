@@ -93,10 +93,9 @@ enum class TrackingProfile(
     ),
     POINT_TO_POINT(
         1,
-        "Point-to-point",
+        "Start & Stop",
         "One fix after confirmed movement starts and one after 10 minutes without " +
-            "acceleration. GPS runs for up to 5 minutes while waiting for at least " +
-            "6 satellites and HDOP ≤1.5."
+            "acceleration."
     ),
     UNKNOWN(-1, "Unknown", "The tracker reported an unsupported tracking profile.");
 

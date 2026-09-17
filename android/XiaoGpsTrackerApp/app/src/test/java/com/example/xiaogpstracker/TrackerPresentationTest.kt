@@ -67,7 +67,6 @@ class TrackerPresentationTest {
         assertEquals(0, TrackingProfile.CONTINUOUS.wireValue)
         assertEquals(1, TrackingProfile.POINT_TO_POINT.wireValue)
         assertEquals(true, TrackingProfile.POINT_TO_POINT.description.contains("10 minutes"))
-        assertEquals(true, TrackingProfile.POINT_TO_POINT.description.contains("6 satellites"))
         assertEquals(true, armed.profile == TrackingProfile.CONTINUOUS)
         assertEquals(false, armed.supportsProfiles)
 
